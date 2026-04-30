@@ -121,6 +121,29 @@ public sealed class TransformNormal : ShaderNode
 }
 
 /// <summary>
+/// Decode a packed normal map color into a tangent-space normal.
+/// </summary>
+[Title( "Decode Normal" ), Category( "Transform" ), Icon( "texture" )]
+public sealed class DecodeNormal : ShaderNode
+{
+	[Input( typeof( Vector3 ) )]
+	[Hide]
+	public NodeInput Input { get; set; }
+
+	[InputDefault( nameof( Input ) )]
+	public Vector3 DefaultInput { get; set; } = new Vector3( 0.5f, 0.5f, 1.0f );
+
+	[Output( typeof( Vector3 ) )]
+	[Hide]
+	public NodeResult.Func Result => ( GraphCompiler compiler ) =>
+	{
+		string input = compiler.ResultOrDefault( Input, DefaultInput ).Cast( 3 );
+
+		return new NodeResult( NodeResultType.Vector3, $"DecodeNormal( {input} )" );
+	};
+}
+
+/// <summary>
 /// Translate, rotate and scale a <see cref="Vector3"/>.
 /// </summary>
 [Title( "Apply TRS" ), Category( "Transform" ), Icon( "3d_rotation" )]
@@ -405,6 +428,37 @@ public sealed class Blend : ShaderNode
 			returnCall = $"saturate( {returnCall} )";
 
 		return new NodeResult( results.Item1.Components, returnCall );
+	};
+}
+
+/// <summary>
+/// Adjusts the strength of a tangent-space normal map.
+/// </summary>
+[Title( "Normal Strength" ), Category( "Transform" ), Icon( "texture" )]
+public sealed class NormalStrength : ShaderNode
+{
+	[Input( typeof( Vector3 ) )]
+	[Hide]
+	public NodeInput Normal { get; set; }
+
+	[Input( typeof( float ) )]
+	[Hide]
+	public NodeInput Strength { get; set; }
+
+	[InputDefault( nameof( Normal ) )]
+	public Vector3 DefaultNormal { get; set; } = new Vector3( 0.0f, 0.0f, 1.0f );
+
+	[InputDefault( nameof( Strength ) )]
+	public float DefaultStrength { get; set; } = 1.0f;
+
+	[Output( typeof( Vector3 ) )]
+	[Hide]
+	public NodeResult.Func Result => ( GraphCompiler compiler ) =>
+	{
+		string normal = compiler.ResultOrDefault( Normal, DefaultNormal ).Cast( 3 );
+		string strength = compiler.ResultOrDefault( Strength, DefaultStrength ).Cast( 1 );
+
+		return new NodeResult( NodeResultType.Vector3, $"normalize( float3( {normal}.xy * {strength}, {normal}.z ) )" );
 	};
 }
 

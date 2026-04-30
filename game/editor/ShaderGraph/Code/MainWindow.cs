@@ -28,6 +28,14 @@ public class MainWindowShader : MainWindow, IAssetEditor
 	}
 }
 
+public enum ShaderGraphDirtyReason
+{
+	Layout,
+	Graph,
+	Property,
+	Subgraph,
+}
+
 
 public class MainWindow : DockWindow
 {
@@ -52,6 +60,8 @@ public class MainWindow : DockWindow
 
 	private Option _undoOption;
 	private Option _redoOption;
+	private Option _recompileOption;
+	private Option _autoRecompileOption;
 
 	private Option _undoMenuOption;
 	private Option _redoMenuOption;
@@ -72,7 +82,32 @@ public class MainWindow : DockWindow
 
 	private bool _isCompiling = false;
 	private bool _isPendingCompile = false;
+	private bool _isShaderStale = false;
+	private int _previewCompileId = 0;
 	private RealTimeSince _timeSinceCompile;
+	private bool _isPreviewGenerationPending = false;
+	private RealTimeSince _timeSincePreviewGenerationRequested;
+	private const float PreviewGenerationDebounce = 0.25f;
+
+	private bool AutoRecompile
+	{
+		get => EditorCookie.Get( "shadergraph.autorecompile", true );
+		set
+		{
+			EditorCookie.Set( "shadergraph.autorecompile", value );
+
+			if ( !value )
+			{
+				_isPreviewGenerationPending = false;
+			}
+			else if ( _isShaderStale )
+			{
+				SchedulePreviewGeneration();
+			}
+
+			UpdateCompileControls();
+		}
+	}
 
 	private Menu _recentFilesMenu;
 	private readonly List<string> _recentFiles = new();
@@ -194,6 +229,7 @@ public class MainWindow : DockWindow
 		if ( _isCompiling )
 		{
 			_isPendingCompile = true;
+			UpdateCompileControls();
 
 			return;
 		}
@@ -210,11 +246,13 @@ public class MainWindow : DockWindow
 		RestoreShader();
 
 		_timeSinceCompile = 0;
+		var compileId = ++_previewCompileId;
+		UpdateCompileControls();
 
-		CompileAsync( resourcePath );
+		CompileAsync( resourcePath, compileId );
 	}
 
-	private async void CompileAsync( string path )
+	private async void CompileAsync( string path, int compileId )
 	{
 		var options = new Sandbox.Engine.Shaders.ShaderCompileOptions
 		{
@@ -233,7 +271,7 @@ public class MainWindow : DockWindow
 			}
 		}
 
-		MainThread.Queue( () => OnCompileFinished( result.Success ? 0 : 1 ) );
+		MainThread.Queue( () => OnCompileFinished( result.Success ? 0 : 1, compileId ) );
 	}
 
 	protected readonly List<string> _shaderCompileErrors = new();
@@ -282,8 +320,13 @@ public class MainWindow : DockWindow
 		} );
 	}
 
-	private void OnCompileFinished( int exitCode )
+	private void OnCompileFinished( int exitCode, int compileId )
 	{
+		if ( compileId != _previewCompileId )
+		{
+			return;
+		}
+
 		_isCompiling = false;
 
 		if ( _isPendingCompile )
@@ -291,6 +334,15 @@ public class MainWindow : DockWindow
 			_isPendingCompile = false;
 
 			Compile();
+
+			return;
+		}
+
+		if ( _isShaderStale || _isPreviewGenerationPending )
+		{
+			_shaderCompileErrors.Clear();
+			_preview.IsCompiling = _isCompiling;
+			UpdateCompileControls();
 
 			return;
 		}
@@ -320,6 +372,7 @@ public class MainWindow : DockWindow
 
 		_preview.IsCompiling = _isCompiling;
 		_preview.PostProcessing = _graph.Domain == ShaderDomain.PostProcess;
+		UpdateCompileControls();
 
 		_shaderCompileErrors.Clear();
 	}
@@ -366,6 +419,10 @@ public class MainWindow : DockWindow
 
 	private string GeneratePreviewCode()
 	{
+		_isPreviewGenerationPending = false;
+		_isShaderStale = false;
+		UpdateCompileControls();
+
 		ClearAttributes();
 
 		var resultNode = _graph.Nodes.OfType<BaseResult>().FirstOrDefault();
@@ -465,6 +522,10 @@ public class MainWindow : DockWindow
 
 			Compile();
 		}
+		else
+		{
+			UpdateCompileControls();
+		}
 
 		return code;
 	}
@@ -480,15 +541,59 @@ public class MainWindow : DockWindow
 		_undoHistory.History = _undoStack.Names;
 	}
 
-	public void SetDirty( bool evaluate = true )
+	public void SetDirty( ShaderGraphDirtyReason reason = ShaderGraphDirtyReason.Graph )
 	{
 		Update();
 
-		_dirty = true;
-		_graphCanvas.WindowTitle = $"{_asset?.Name ?? "untitled"}*";
+		if ( reason != ShaderGraphDirtyReason.Subgraph )
+		{
+			_dirty = true;
+			_graphCanvas.WindowTitle = $"{_asset?.Name ?? "untitled"}*";
+		}
 
-		if ( evaluate )
-			GeneratePreviewCode();
+		if ( reason != ShaderGraphDirtyReason.Layout )
+		{
+			_isShaderStale = true;
+			UpdateCompileControls();
+		}
+
+		if ( reason != ShaderGraphDirtyReason.Layout && AutoRecompile )
+			SchedulePreviewGeneration();
+	}
+
+	private void SchedulePreviewGeneration()
+	{
+		_isPreviewGenerationPending = true;
+		_timeSincePreviewGenerationRequested = 0;
+		UpdateCompileControls();
+	}
+
+	private void RecompileShader()
+	{
+		var previousCode = _generatedCode;
+		var code = GeneratePreviewCode();
+
+		if ( !string.IsNullOrWhiteSpace( code ) && code == previousCode && !_isCompiling )
+		{
+			Compile();
+		}
+	}
+
+	private void UpdateCompileControls()
+	{
+		if ( _recompileOption is not null )
+		{
+			var staleText = _isShaderStale ? " (out of date)" : "";
+			_recompileOption.Text = "Recompile";
+			_recompileOption.ToolTip = $"Recompile shader{staleText}";
+			_recompileOption.StatusTip = $"Recompile shader{staleText}";
+		}
+
+		if ( _autoRecompileOption is not null )
+		{
+			_autoRecompileOption.ToolTip = AutoRecompile ? "Auto Recompile is enabled" : "Auto Recompile is disabled";
+			_autoRecompileOption.StatusTip = AutoRecompile ? "Auto Recompile is enabled" : "Auto Recompile is disabled";
+		}
 	}
 
 	[EditorEvent.Frame]
@@ -515,6 +620,11 @@ public class MainWindow : DockWindow
 		}
 
 		CheckForChanges();
+
+		if ( _isPreviewGenerationPending && _timeSincePreviewGenerationRequested > PreviewGenerationDebounce )
+		{
+			GeneratePreviewCode();
+		}
 	}
 
 	private void CheckForChanges()
@@ -547,7 +657,7 @@ public class MainWindow : DockWindow
 			_graph.DeserializeNodes( op.undoBuffer );
 			_graphView.RebuildFromGraph();
 
-			SetDirty();
+			SetDirty( ShaderGraphDirtyReason.Graph );
 		}
 	}
 
@@ -564,7 +674,7 @@ public class MainWindow : DockWindow
 			_graph.DeserializeNodes( op.redoBuffer );
 			_graphView.RebuildFromGraph();
 
-			SetDirty();
+			SetDirty( ShaderGraphDirtyReason.Graph );
 		}
 	}
 
@@ -578,7 +688,7 @@ public class MainWindow : DockWindow
 			_graph.DeserializeNodes( op.redoBuffer );
 			_graphView.RebuildFromGraph();
 
-			SetDirty();
+			SetDirty( ShaderGraphDirtyReason.Graph );
 		}
 	}
 
@@ -647,12 +757,21 @@ public class MainWindow : DockWindow
 
 		toolBar.AddSeparator();
 
-		toolBar.AddOption( "Compile", "refresh", Compile ).StatusTip = "Compile Graph";
+		_recompileOption = toolBar.AddOption( "Recompile", "refresh", RecompileShader );
+		_recompileOption.ToolTip = "Recompile shader";
+		_recompileOption.StatusTip = "Recompile shader";
+
+		_autoRecompileOption = toolBar.AddOption( "Auto Recompile", "preview" );
+		_autoRecompileOption.Checkable = true;
+		_autoRecompileOption.Checked = AutoRecompile;
+		_autoRecompileOption.Toggled += b => AutoRecompile = b;
+
 		toolBar.AddOption( "Open Generated Shader", "common/edit.png", OpenGeneratedShader ).StatusTip = "Open Generated Shader";
 		toolBar.AddOption( "Take Screenshot", "photo_camera", Screenshot ).StatusTip = "Take Screenshot";
 
 		_undoOption.Enabled = false;
 		_redoOption.Enabled = false;
+		UpdateCompileControls();
 	}
 
 	public void BuildMenuBar()
@@ -740,6 +859,18 @@ public class MainWindow : DockWindow
 		style.Checkable = true;
 		style.Checked = ShaderGraphView.EnableGridAlignedWires;
 		style.Toggled += b => ShaderGraphView.EnableGridAlignedWires = b;
+
+		var autoRecompile = view.AddOption( "Auto Recompile", "preview" );
+		autoRecompile.Checkable = true;
+		autoRecompile.Checked = AutoRecompile;
+		autoRecompile.Toggled += b =>
+		{
+			AutoRecompile = b;
+			if ( _autoRecompileOption is not null )
+			{
+				_autoRecompileOption.Checked = b;
+			}
+		};
 	}
 
 	private void ClearRecentFiles()
@@ -1123,7 +1254,7 @@ public class MainWindow : DockWindow
 		}
 
 		_graphView.Graph = _graph;
-		_graphView.OnChildValuesChanged += ( w ) => SetDirty();
+		_graphView.OnChildValuesChanged += ( w ) => SetDirty( ShaderGraphDirtyReason.Graph );
 		_graphCanvas.Layout.Add( _graphView, 1 );
 
 		_output = new Output( this );
@@ -1218,8 +1349,8 @@ public class MainWindow : DockWindow
 			_graphView.UpdateNode( node );
 		}
 
-		var shouldEvaluate = _properties.Target is not CommentNode;
-		SetDirty( shouldEvaluate );
+		var reason = _properties.Target is CommentNode ? ShaderGraphDirtyReason.Layout : ShaderGraphDirtyReason.Property;
+		SetDirty( reason );
 	}
 
 	protected override void RestoreDefaultDockLayout()
@@ -1262,6 +1393,6 @@ public class MainWindow : DockWindow
 			}
 		}
 
-		GeneratePreviewCode();
+		SetDirty( ShaderGraphDirtyReason.Subgraph );
 	}
 }

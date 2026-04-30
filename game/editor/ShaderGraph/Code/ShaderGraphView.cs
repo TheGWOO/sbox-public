@@ -6,6 +6,7 @@ public class ShaderGraphView : GraphView
 {
 	private readonly MainWindow _window;
 	private readonly UndoStack _undoStack;
+	private string _pendingUndoName;
 
 	protected override string ClipboardIdent => "shadergraph";
 
@@ -143,6 +144,7 @@ public class ShaderGraphView : GraphView
 	public override void PushUndo( string name )
 	{
 		Log.Info( $"Push Undo ({name})" );
+		_pendingUndoName = name;
 		_undoStack.PushUndo( name, Graph.SerializeNodes() );
 		_window.OnUndoPushed();
 	}
@@ -151,7 +153,11 @@ public class ShaderGraphView : GraphView
 	{
 		Log.Info( "Push Redo" );
 		_undoStack.PushRedo( Graph.SerializeNodes() );
-		_window.SetDirty();
+
+		var reason = _pendingUndoName == "Move Item" ? ShaderGraphDirtyReason.Layout : ShaderGraphDirtyReason.Graph;
+		_pendingUndoName = null;
+
+		_window.SetDirty( reason );
 	}
 
 	protected override void OnOpenContextMenu( Menu menu, Plug targetPlug )

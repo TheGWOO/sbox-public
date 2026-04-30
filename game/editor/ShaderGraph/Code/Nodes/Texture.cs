@@ -214,6 +214,70 @@ public sealed class TextureSampler : TextureSamplerBase
 }
 
 /// <summary>
+/// Sample and decode a 2D normal map.
+/// </summary>
+[Title( "Normal Map 2D" ), Category( "Textures" ), Icon( "texture" )]
+public sealed class NormalMapSampler : TextureSamplerBase
+{
+	/// <summary>
+	/// Coordinates to sample this texture (Defaults to vertex coordinates)
+	/// </summary>
+	[Title( "Coordinates" )]
+	[Input( typeof( Vector2 ) )]
+	[Hide]
+	public NodeInput Coords { get; set; }
+
+	public NormalMapSampler() : base()
+	{
+		Image = "materials/default/default_normal.tga";
+		UI = new TextureInput
+		{
+			ImageFormat = TextureFormat.DXT5,
+			SrgbRead = false,
+			ColorSpace = TextureColorSpace.Linear,
+			Extension = TextureExtension.Normal,
+			Processor = TextureProcessor.NormalizeNormals,
+			Default = new Color( 0.5f, 0.5f, 1.0f, 1.0f )
+		};
+	}
+
+	/// <summary>
+	/// Decoded tangent-space normal result
+	/// </summary>
+	[Hide]
+	[Output( typeof( Vector3 ) ), Title( "XYZ" )]
+	public NodeResult.Func Result => ( GraphCompiler compiler ) =>
+	{
+		var input = UI;
+		input.Type = TextureType.Tex2D;
+
+		CompileTexture();
+
+		var texture = string.IsNullOrWhiteSpace( TexturePath ) ? null : Texture.Load( TexturePath );
+		texture ??= Texture.Load( "materials/default/default_normal.tga" ) ?? Texture.White;
+
+		var result = compiler.ResultTexture( Sampler, input, texture );
+		var coords = compiler.Result( Coords );
+
+		string sample;
+		if ( compiler.Stage == GraphCompiler.ShaderStage.Vertex )
+		{
+			sample = $"{result.Item1}.SampleLevel(" +
+				$" g_sSampler{result.Item2}," +
+				$" {(coords.IsValid ? $"{coords.Cast( 2 )}" : "i.vTextureCoords.xy")}, 0 ).xyz";
+		}
+		else
+		{
+			sample = $"Tex2DS( {result.Item1}," +
+				$" g_sSampler{result.Item2}," +
+				$" {(coords.IsValid ? $"{coords.Cast( 2 )}" : "i.vTextureCoords.xy")} ).xyz";
+		}
+
+		return new NodeResult( 3, $"DecodeNormal( {sample} )" );
+	};
+}
+
+/// <summary>
 /// Sample a Cube Texture
 /// </summary>
 [Title( "Texture Cube" ), Category( "Textures" ), Icon( "view_in_ar" )]
