@@ -1,4 +1,5 @@
-﻿using Sandbox.Rendering;
+﻿using System.Runtime.InteropServices;
+using Sandbox.Rendering;
 using System.Numerics;
 
 namespace Sandbox;
@@ -158,6 +159,7 @@ public class SceneLineObject : SceneCustomObject
 	private static readonly SamplerState WrapSampler = new() { Filter = FilterMode.Anisotropic, MaxAnisotropy = 8, AddressModeU = TextureAddressMode.Wrap, AddressModeV = TextureAddressMode.Wrap };
 	private static readonly SamplerState ClampSampler = new() { Filter = FilterMode.Anisotropic, MaxAnisotropy = 8, AddressModeU = TextureAddressMode.Clamp, AddressModeV = TextureAddressMode.Clamp };
 	private readonly List<LinePoint> _points = [];
+	private readonly CommandList _commandList = new( "SceneLine" );
 	private BBox _bounds;
 
 	private int _pointCount;
@@ -171,8 +173,6 @@ public class SceneLineObject : SceneCustomObject
 #pragma warning disable CS0618
 		LineTexture = Texture.White;
 #pragma warning restore CS0618
-
-		managedNative.ExecuteOnMainThread = false;
 	}
 
 	public void StartLine()
@@ -270,11 +270,6 @@ public class SceneLineObject : SceneCustomObject
 			_vertexBuffer = new GpuBuffer<LineVertex>( _vertexCapacity, GpuBuffer.UsageFlags.Vertex | GpuBuffer.UsageFlags.Structured );
 		}
 
-		if ( _pointBuffer.IsValid() )
-		{
-			_pointBuffer.SetData( _points );
-		}
-
 		if ( Face == FaceMode.Cylinder )
 		{
 			// Unsupported on Cylinder
@@ -289,6 +284,8 @@ public class SceneLineObject : SceneCustomObject
 
 		_csAttributes.Set( "TessellationLevel", _tessellationLevel );
 		_csAttributes.Set( "RoundedCapSegments", _roundedCapSegments );
+
+		BuildCommandList();
 	}
 
 	public void Clear()
@@ -308,6 +305,8 @@ public class SceneLineObject : SceneCustomObject
 		_pointBuffer = default;
 		_vertexBuffer = default;
 		_indexBuffer = default;
+
+		_commandList.Reset();
 	}
 
 	private int CalculateIndexCount()
@@ -334,35 +333,48 @@ public class SceneLineObject : SceneCustomObject
 		return lineVertices + capVertices;
 	}
 
+	private void BuildCommandList()
+	{
+		_commandList.Reset();
+
+		var indexCount = CalculateIndexCount();
+
+		if ( indexCount < 6 )
+			return;
+
+		if ( !_pointBuffer.IsValid() || !_vertexBuffer.IsValid() || !_indexBuffer.IsValid() )
+			return;
+
+		// Upload point data to GPU (deferred to render thread)
+		_commandList.SetBufferData( _pointBuffer, CollectionsMarshal.AsSpan( _points ) );
+
+		// Compute shader attributes
+		_commandList.Attributes.Set( "PointBuffer", (GpuBuffer)_pointBuffer );
+		_commandList.Attributes.Set( "VertexBuffer", (GpuBuffer)_vertexBuffer );
+		_commandList.Attributes.Set( "IndexBuffer", (GpuBuffer)_indexBuffer );
+		_commandList.Attributes.Set( "PointCount", _pointCount );
+		_commandList.Attributes.Set( "FaceMode", _csAttributes.GetInt( "FaceMode" ) );
+		_commandList.Attributes.Set( "StartCap", _csAttributes.GetInt( "StartCap" ) );
+		_commandList.Attributes.Set( "EndCap", _csAttributes.GetInt( "EndCap" ) );
+		_commandList.Attributes.Set( "TessellationLevel", _csAttributes.GetInt( "TessellationLevel" ) );
+		_commandList.Attributes.Set( "RoundedCapSegments", _csAttributes.GetInt( "RoundedCapSegments" ) );
+		_commandList.DispatchCompute( _cs, _pointCount, 1, 1 );
+
+		_commandList.ResourceBarrierTransition( (GpuBuffer)_vertexBuffer, ResourceState.UnorderedAccess, ResourceState.VertexOrIndexBuffer );
+		_commandList.ResourceBarrierTransition( (GpuBuffer)_indexBuffer, ResourceState.UnorderedAccess, ResourceState.VertexOrIndexBuffer );
+
+		// Setup and draw using sceneobjects attributes... this needs a good refactor.
+		if ( Lighting )
+		{
+			_commandList.SetupLighting( this, Attributes );
+		}
+
+		_commandList.DrawIndexed( _vertexBuffer, (GpuBuffer)_indexBuffer, Material, 0, indexCount, Attributes );
+	}
+
 	public override void RenderSceneObject()
 	{
 		base.RenderSceneObject();
-
-		// If we have less than a quad fuck off
-		if ( CalculateIndexCount() < 6 )
-			return;
-
-		if ( !_pointBuffer.IsValid() )
-			return;
-
-		if ( !_vertexBuffer.IsValid() )
-			return;
-
-		if ( !_indexBuffer.IsValid() )
-			return;
-
-		_csAttributes.Set( "PointBuffer", _pointBuffer );
-		_csAttributes.Set( "VertexBuffer", _vertexBuffer );
-		_csAttributes.Set( "IndexBuffer", _indexBuffer );
-		_csAttributes.Set( "PointCount", _pointCount );
-		_cs.DispatchWithAttributes( _csAttributes, _pointCount, 1, 1 );
-
-		Graphics.ResourceBarrierTransition( _vertexBuffer, ResourceState.UnorderedAccess, ResourceState.VertexOrIndexBuffer );
-		Graphics.ResourceBarrierTransition( _indexBuffer, ResourceState.UnorderedAccess, ResourceState.VertexOrIndexBuffer );
-		if ( Lighting )
-		{
-			Graphics.SetupLighting( this, Attributes );
-		}
-		Graphics.Draw( _vertexBuffer, _indexBuffer, Material, 0, CalculateIndexCount(), Attributes );
+		_commandList.ExecuteOnRenderThread();
 	}
 }
