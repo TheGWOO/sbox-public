@@ -194,7 +194,7 @@ internal static class ReflectionQueryCache
 			return true;
 		}
 
-		// Resource references can just be copied,
+		// Resource references can just be copied, embedded resoures are handled further during cloning
 		if ( t.HasBaseType( "Sandbox.Resource" ) )
 		{
 			return true;
