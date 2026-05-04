@@ -2,7 +2,6 @@ namespace Sandbox;
 
 using Sandbox.Hashing;
 using Sandbox.Rendering;
-using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
 using System.Runtime.InteropServices;
@@ -21,20 +20,11 @@ public sealed class SceneSpriteSystem : GameObjectSystem<SceneSpriteSystem>
 		Listen( Stage.FinishUpdate, 1, UpdateSprites, "UpdateSprites" ); // We want to upload after particles update
 	}
 
-	public override void Dispose()
-	{
-		if ( _sharedSprites != null )
-		{
-			ArrayPool<SpriteBatchSceneObject.SpriteData>.Shared.Return( _sharedSprites );
-			_sharedSprites = null;
-		}
-		base.Dispose();
-	}
-
 	private readonly ConcurrentBag<Guid> _activeParticleEmitters = new();
 	private readonly ConcurrentBag<(Guid id, ulong group, IBatchedParticleSpriteRenderer system, int offset, int count, int splotCount, BBox bounds)> _particleProcessingResults = new();
 	private HashSet<Guid> _registeredSpriteRenderers = new();
-	private SpriteBatchSceneObject.SpriteData[] _sharedSprites;
+	private SpriteBatchSceneObject.SpriteData[] _sharedSprites = [];
+	private readonly List<SystemOffset> _systemOffsets = [];
 	private readonly List<SpriteRenderer> _allSprites = new();
 	private readonly HashSet<Guid> _activeParticleIds = new();
 	private readonly HashSet<Guid> _currentEnabledSprites = new();
@@ -71,16 +61,12 @@ public sealed class SceneSpriteSystem : GameObjectSystem<SceneSpriteSystem>
 		}
 
 		// Here we allocate one big chunk of memory for all particle systems, each writting at a separate offset
-		if ( _sharedSprites == null || _sharedSprites.Length < totalParticles )
-		{
-			if ( _sharedSprites != null ) ArrayPool<SpriteBatchSceneObject.SpriteData>.Shared.Return( _sharedSprites );
-			_sharedSprites = ArrayPool<SpriteBatchSceneObject.SpriteData>.Shared.Rent( totalParticles );
-		}
+		if ( _sharedSprites.Length < totalParticles )
+			Array.Resize( ref _sharedSprites, totalParticles );
 
 		// Calculate write offsets for each particle system	
-		var systemOffsets = new SystemOffset[spriteRenderers.Count()];
+		_systemOffsets.Clear();
 		int currentOffset = 0;
-		int systemIndex = 0;
 
 		foreach ( var particleSystem in spriteRenderers )
 		{
@@ -88,9 +74,8 @@ public sealed class SceneSpriteSystem : GameObjectSystem<SceneSpriteSystem>
 
 			var particleRenderer = (ParticleRenderer)particleSystem;
 			int particleCount = particleRenderer.ParticleEffect.Particles.Count;
-			systemOffsets[systemIndex] = new( particleSystem, currentOffset, particleCount );
+			_systemOffsets.Add( new( particleSystem, currentOffset, particleCount ) );
 			currentOffset += particleCount;
-			systemIndex++;
 			if ( particleSystem is ParticleSpriteRenderer psr )
 			{
 				psr.AdvanceFrame();
@@ -99,8 +84,9 @@ public sealed class SceneSpriteSystem : GameObjectSystem<SceneSpriteSystem>
 
 		// Parallel processing to write simulated particles to the data block that will be copied to the GPU
 		// Process all batched particle renderers
-		Parallel.ForEach( systemOffsets, systemInfo =>
+		Parallel.For( 0, _systemOffsets.Count, i =>
 		{
+			var systemInfo = _systemOffsets[i];
 			if ( systemInfo.ParticleCount == 0 ) return;
 
 			var particleRenderer = (ParticleRenderer)systemInfo.System;

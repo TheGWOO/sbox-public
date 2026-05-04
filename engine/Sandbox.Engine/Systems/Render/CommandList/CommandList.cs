@@ -67,10 +67,7 @@ public sealed unsafe partial class CommandList
 	/// </summary>
 	readonly List<Entry> _entries = new List<Entry>( 8 );
 
-	/// <summary>
-	/// Byte arrays rented from ArrayPool for SetBufferData, returned on Reset.
-	/// </summary>
-	readonly List<byte[]> _rentedBuffers = new();
+
 
 	[System.Runtime.CompilerServices.MethodImpl( System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining )]
 	void AddEntry( delegate*< ref Entry, CommandList, void > execute, Entry data )
@@ -125,9 +122,7 @@ public sealed unsafe partial class CommandList
 		Attributes.ClearRenderTargets();
 		_entries.Clear();
 
-		foreach ( var buf in _rentedBuffers )
-			System.Buffers.ArrayPool<byte>.Shared.Return( buf );
-		_rentedBuffers.Clear();
+
 	}
 
 	public void Blit( Material material, RenderAttributes attributes = null )
@@ -1209,27 +1204,25 @@ public sealed unsafe partial class CommandList
 	}
 
 	/// <summary>
-	/// Uploads data to a GPU buffer at execution time. The data is captured into a pooled
-	/// byte[] at record time, and the buffer is returned to ArrayPool on Reset.
-	/// Safe for replay (multiple executions per frame).
+	/// Uploads data from an array to a GPU buffer at execution time.
+	/// Zero-copy: the array reference is stored directly without copying.
+	/// The caller must ensure the array contents remain stable until the command list
+	/// has finished executing (i.e. until the next <see cref="Reset"/> call).
 	/// </summary>
-	public void SetBufferData<T>( GpuBuffer<T> buffer, ReadOnlySpan<T> data, int elementOffset = 0 ) where T : unmanaged
+	internal void SetBufferData<T>( GpuBuffer<T> buffer, T[] data, int sourceOffset = 0, int count = -1, int elementOffset = 0 ) where T : unmanaged
 	{
-		int byteCount = data.Length * Unsafe.SizeOf<T>();
-		var rented = System.Buffers.ArrayPool<byte>.Shared.Rent( byteCount );
-		System.Runtime.InteropServices.MemoryMarshal.AsBytes( data ).CopyTo( rented );
-		_rentedBuffers.Add( rented );
+		if ( count < 0 ) count = data.Length - sourceOffset;
 
 		static void Execute( ref Entry entry, CommandList commandList )
 		{
 			var buf = (GpuBuffer<T>)entry.Object1;
-			var bytes = (byte[])entry.Object2;
+			var arr = (T[])entry.Object2;
+			int srcOffset = (int)entry.Data1.z;
 			int length = (int)entry.Data1.y;
-			int byteLen = length * Unsafe.SizeOf<T>();
-			buf.SetData( System.Runtime.InteropServices.MemoryMarshal.Cast<byte, T>( bytes.AsSpan( 0, byteLen ) ), (int)entry.Data1.x );
+			buf.SetData( arr.AsSpan( srcOffset, length ), (int)entry.Data1.x );
 		}
 
-		AddEntry( &Execute, new Entry { Object1 = buffer, Object2 = rented, Data1 = new Vector4( elementOffset, data.Length, 0, 0 ) } );
+		AddEntry( &Execute, new Entry { Object1 = buffer, Object2 = data, Data1 = new Vector4( elementOffset, count, sourceOffset, 0 ) } );
 	}
 
 	/// <summary>

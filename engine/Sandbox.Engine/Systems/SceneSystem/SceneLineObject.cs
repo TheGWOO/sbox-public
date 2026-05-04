@@ -1,5 +1,4 @@
-﻿using System.Runtime.InteropServices;
-using Sandbox.Rendering;
+﻿using Sandbox.Rendering;
 using System.Numerics;
 
 namespace Sandbox;
@@ -158,7 +157,7 @@ public class SceneLineObject : SceneCustomObject
 	private GpuBuffer<uint> _indexBuffer;
 	private static readonly SamplerState WrapSampler = new() { Filter = FilterMode.Anisotropic, MaxAnisotropy = 8, AddressModeU = TextureAddressMode.Wrap, AddressModeV = TextureAddressMode.Wrap };
 	private static readonly SamplerState ClampSampler = new() { Filter = FilterMode.Anisotropic, MaxAnisotropy = 8, AddressModeU = TextureAddressMode.Clamp, AddressModeV = TextureAddressMode.Clamp };
-	private readonly List<LinePoint> _points = [];
+	private LinePoint[] _points = [];
 	private readonly CommandList _commandList = new( "SceneLine" );
 	private BBox _bounds;
 
@@ -177,8 +176,6 @@ public class SceneLineObject : SceneCustomObject
 
 	public void StartLine()
 	{
-		_points.Clear();
-
 		_pointCount = 0;
 
 		_bounds = BBox.FromPositionAndSize( Transform.Position, 10 );
@@ -196,11 +193,15 @@ public class SceneLineObject : SceneCustomObject
 
 	public void AddLinePoint( in Vector3 pos, in Vector3 normal, Color color, float width, float textureCoord )
 	{
-		if ( _pointCount > 0 && _points[^1].Position.DistanceSquared( pos ) < 0.01f )
+		if ( _pointCount > 0 && _points[_pointCount - 1].Position.DistanceSquared( pos ) < 0.01f )
 			return;
 
-		var point = new LinePoint( 0, pos, normal, color, width, textureCoord );
-		_points.Add( point );
+		if ( _pointCount >= _points.Length )
+		{
+			Array.Resize( ref _points, Math.Max( 8, _points.Length * 2 ) );
+		}
+
+		_points[_pointCount] = new LinePoint( 0, pos, normal, color, width, textureCoord );
 
 		_pointCount++;
 		_bounds = _bounds.AddPoint( pos );
@@ -246,11 +247,11 @@ public class SceneLineObject : SceneCustomObject
 		var startCap = StartCap;
 		var endCap = EndCap;
 
-		if ( _points.Count > _pointCapacity )
+		if ( _pointCount > _pointCapacity )
 		{
 			MainThread.QueueDispose( _pointBuffer );
 
-			_pointCapacity = (int)(_points.Count * 1.5);
+			_pointCapacity = (int)(_pointCount * 1.5);
 			_pointBuffer = new GpuBuffer<LinePoint>( _pointCapacity, GpuBuffer.UsageFlags.Structured );
 		}
 
@@ -290,8 +291,6 @@ public class SceneLineObject : SceneCustomObject
 
 	public void Clear()
 	{
-		_points.Clear();
-
 		_pointCount = 0;
 
 		_pointCapacity = 0;
@@ -346,7 +345,7 @@ public class SceneLineObject : SceneCustomObject
 			return;
 
 		// Upload point data to GPU (deferred to render thread)
-		_commandList.SetBufferData( _pointBuffer, CollectionsMarshal.AsSpan( _points ) );
+		_commandList.SetBufferData( _pointBuffer, _points, 0, _pointCount );
 
 		// Compute shader attributes
 		_commandList.Attributes.Set( "PointBuffer", (GpuBuffer)_pointBuffer );

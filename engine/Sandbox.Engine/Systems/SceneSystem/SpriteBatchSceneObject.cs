@@ -20,6 +20,7 @@ internal sealed class SpriteBatchSceneObject : SceneCustomObject
 
 	private static ComputeShader SpriteComputeShader = new( "sprite/sprite_cs" );
 	private static ComputeShader SortComputeShader = new( "sort_cs" );
+	private static readonly uint[] ZeroUint = [0];
 	private readonly GpuBuffer<uint> SpriteAtomicCounter;
 	private readonly CommandList _commandList = new( "SpriteBatch" );
 
@@ -486,16 +487,16 @@ internal sealed class SpriteBatchSceneObject : SceneCustomObject
 		if ( spriteCount == 0 )
 			return;
 
-		// Upload sprite data to GPU (deferred to render thread)
+		// Upload sprite data to GPU (deferred to render thread, zero-copy)
 		if ( componentCount > 0 )
 		{
-			_commandList.SetBufferData( SpriteBuffer, SpriteDataBuffer.AsSpan( 0, componentCount ) );
+			_commandList.SetBufferData( SpriteBuffer, SpriteDataBuffer, 0, componentCount );
 		}
 
 		int currentOffset = componentCount;
 		foreach ( var group in SpriteGroups.Values )
 		{
-			_commandList.SetBufferData( SpriteBuffer, group.SharedSprites.AsSpan( group.Offset, group.Count ), currentOffset );
+			_commandList.SetBufferData( SpriteBuffer, group.SharedSprites, group.Offset, group.Count, currentOffset );
 			currentOffset += group.Count;
 		}
 
@@ -506,7 +507,7 @@ internal sealed class SpriteBatchSceneObject : SceneCustomObject
 		int bufferSize = CurrentBufferSize;
 		int totalInstances = spriteCount + splotCount;
 
-		_commandList.SetBufferData( SpriteAtomicCounter, (ReadOnlySpan<uint>)[0] );
+		_commandList.SetBufferData( SpriteAtomicCounter, ZeroUint );
 
 		if ( sorted && totalInstances >= 2 )
 		{
