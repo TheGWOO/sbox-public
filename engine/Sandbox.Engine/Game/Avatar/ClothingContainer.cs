@@ -423,6 +423,7 @@ public partial class ClothingContainer
 
 	/// <summary>
 	/// Removes clothing items that the given connection is not verified to own.
+	/// Must be called from the host or from the local player, as clients don't have access to other player inventory data.
 	/// </summary>
 	public void RemoveUnownedItems( Connection connection )
 	{
@@ -432,6 +433,10 @@ public partial class ClothingContainer
 			RemoveUnownedItems();
 			return;
 		}
+
+		// Clients don't have this data for remote players, so don't remove anything.
+		if ( !Networking.IsHost )
+			return;
 
 		// Use Connection.HasInventoryItem for remote players
 		Clothing.RemoveAll( entry =>
