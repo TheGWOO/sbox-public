@@ -258,6 +258,7 @@ partial class ObjectSelection
 			_tool.ClearPivot();
 		}
 
+		[Shortcut( "mesh.bake-scale", "", typeof( SceneViewWidget ) )]
 		public void BakeScale()
 		{
 			using var scope = SceneEditorSession.Scope();
@@ -274,6 +275,7 @@ partial class ObjectSelection
 			}
 		}
 
+		[Shortcut( "mesh.flip-all-mesh-faces", "F", typeof( SceneViewWidget ) )]
 		public void FlipMesh()
 		{
 			using var scope = SceneEditorSession.Scope();
@@ -371,6 +373,24 @@ partial class ObjectSelection
 				var selection = SceneEditorSession.Active.Selection;
 				selection.Set( sourceMesh.GameObject );
 			}
+		}
+
+		[Shortcut( "mesh.frame-selection", "SHIFT+A", typeof( SceneViewWidget ) )]
+		private void FrameSelection()
+		{
+			if ( _gos.Length == 0 )
+				return;
+
+			var bounds = _gos[0].GetBounds()
+				.AddBBox( BBox.FromPositionAndSize( _gos[0].WorldPosition, 16 ) );
+
+			for ( var i = 1; i < _gos.Length; i++ )
+			{
+				bounds = bounds.AddBBox( _gos[i].GetBounds() );
+				bounds = bounds.AddBBox( BBox.FromPositionAndSize( _gos[i].WorldPosition, 16 ) );
+			}
+
+			_gos[0].Scene.Editor.FrameTo( bounds );
 		}
 
 		public void MergeMeshesByEdge()
