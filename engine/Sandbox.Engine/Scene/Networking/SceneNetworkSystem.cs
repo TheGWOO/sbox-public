@@ -1,4 +1,5 @@
-﻿using Sandbox.Network;
+﻿using Sandbox.Engine;
+using Sandbox.Network;
 using Sandbox.Utility;
 using System.IO;
 using System.Text.Json.Nodes;
@@ -159,7 +160,14 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 			var networkObject = BatchSpawnList.FirstOrDefault();
 
 			if ( !(networkObject.GameObject?.IsDestroyed ?? true) )
+			{
 				Broadcast( networkObject.GetCreateMessage() );
+
+				foreach ( var recipient in GetFilteredConnections() )
+				{
+					networkObject.MarkCreateMessageSent( recipient );
+				}
+			}
 
 			BatchSpawnList.Clear();
 			return;
@@ -177,9 +185,23 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 		}
 
 		msg.CreateMsgs = list.ToArray();
-		BatchSpawnList.Clear();
 
 		Broadcast( msg );
+
+		var recipients = GetFilteredConnections().ToList();
+
+		foreach ( var networkObject in BatchSpawnList )
+		{
+			if ( networkObject.GameObject?.IsDestroyed ?? true )
+				continue;
+
+			foreach ( var recipient in recipients )
+			{
+				networkObject.MarkCreateMessageSent( recipient );
+			}
+		}
+
+		BatchSpawnList.Clear();
 	}
 
 	/// <summary>
@@ -201,6 +223,11 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 		}
 
 		Broadcast( networkObject.GetCreateMessage() );
+
+		foreach ( var recipient in GetFilteredConnections() )
+		{
+			networkObject.MarkCreateMessageSent( recipient );
+		}
 	}
 
 	/// <summary>
@@ -244,6 +271,11 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 		// Let them know we have now loaded this scene.
 		var loadedMsg = new SceneLoadedMsg { SceneId = msg.SceneId, Id = msg.Id };
 		connection.SendMessage( loadedMsg, NetFlags.Reliable );
+
+		if ( Application.IsEditor )
+		{
+			IToolsDll.Current?.SetPlaying();
+		}
 
 		LoadingScreen.IsVisible = false;
 	}
@@ -290,15 +322,23 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 			NetworkObjects = new List<object>( 64 )
 		};
 
-		GetSnapshot( default, ref snapshot );
+		GetSnapshot( connection, ref snapshot );
 		output.Snapshot = snapshot;
+
+		foreach ( var networkObjectData in snapshot.NetworkObjects )
+		{
+			if ( networkObjectData is not ObjectCreateMsg createMessage )
+				continue;
+
+			var networkGameObject = activeScene.Directory.FindByGuid( createMessage.Guid );
+			networkGameObject?._net?.MarkCreateMessageSent( connection );
+		}
 
 		var bs = ByteStream.Create( 256 );
 		bs.Write( InternalMessageType.Packed );
 
 		Networking.System.Serialize( output, ref bs );
 		connection.SendStream( bs );
-
 		bs.Dispose();
 	}
 
@@ -395,7 +435,7 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 
 		using ( analytic.ScopeTimer( "NetworkObjectTime" ) )
 		{
-			Game.ActiveScene.SerializeNetworkObjects( msg.NetworkObjects );
+			Game.ActiveScene.SerializeNetworkObjects( source, msg.NetworkObjects );
 		}
 
 		var systems = Game.ActiveScene.GetSystems();
@@ -568,6 +608,10 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 				if ( nwo is not ObjectCreateMsg oc )
 					continue;
 
+				// Fold blobs into the shared scope - Deserialize is deferred to the batch flush,
+				// so a per-object scope would be gone before its blob data (eg. mesh) is read.
+				blobs.Load( oc.BlobData );
+
 				var go = new GameObject();
 				go.Deserialize( JsonNode.Parse( oc.JsonData ).AsObject(), networkDeserializeOptionsCreate );
 				createdNetworkObjects.Add( new( go, oc ) );
@@ -597,6 +641,8 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 
 		MountedVPKs?.Dispose();
 		MountedVPKs = null;
+
+		LoadingScreen.Title = null;
 
 		// Wait for loading to finish
 		if ( Game.ActiveScene is not null )
@@ -691,6 +737,8 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 
 	public override void OnJoined( Connection client )
 	{
+		Platform.Chat.BroadcastText( $"👋 {client.Name} has joined the game" );
+
 		Action queue = default;
 
 		foreach ( var c in Game.ActiveScene.GetAll<Component.INetworkListener>() )
@@ -726,6 +774,8 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 
 			if ( Networking.IsHost )
 			{
+				Platform.Chat.BroadcastText( $"👋 {client.Name} left the game" );
+
 				Action queue = default;
 
 				foreach ( var c in Game.ActiveScene.GetAll<Component.INetworkListener>() )
@@ -929,6 +979,11 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 			gameObject.SetParentFromNetwork( parentObject );
 		}
 
+		if ( source is not null && !source.IsHost )
+		{
+			gameObject.PreserveFromHostSyncMembers( gameObjectJson );
+		}
+
 		using ( var _ = CallbackBatch.Batch() )
 		using ( BlobDataSerializer.LoadFromMemory( message.BlobData ) )
 		{
@@ -1003,6 +1058,11 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 			return;
 		}
 
+		if ( source is not null && !source.IsHost )
+		{
+			component.PreserveFromHostSyncMembers( componentJson );
+		}
+
 		using ( CallbackBatch.Batch() )
 		using ( BlobDataSerializer.LoadFromMemory( message.BlobData ) )
 		{
@@ -1069,6 +1129,10 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 		{
 			foreach ( var msg in message.CreateMsgs )
 			{
+				// Don't let clients claim ownership or creation on behalf of other connections
+				if ( source is not null && !source.IsHost && (msg.Owner != source.Id || msg.Creator != source.Id) )
+					continue;
+
 				using ( BlobDataSerializer.LoadFromMemory( msg.BlobData ) )
 				{
 					var go = new GameObject();
@@ -1091,6 +1155,10 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 
 		// Is this a request from someone?
 		if ( source is not null && !source.CanSpawnObjects )
+			return;
+
+		// Don't let clients claim ownership or creation on behalf of other connections
+		if ( source is not null && !source.IsHost && (message.Owner != source.Id || message.Creator != source.Id) )
 			return;
 
 		var go = new GameObject();
@@ -1168,7 +1236,7 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 
 		if ( !source.IsHost )
 		{
-			Log.Warning( $"OnObjectDetach: Only the host can detach networked objects. {source.DisplayName} attempted to detach {obj.Name}." );
+			Log.Warning( $"OnObjectDetach: Only the host can detach networked objects. {source.Name} attempted to detach {obj.Name}." );
 			return;
 		}
 
@@ -1200,7 +1268,7 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 			// If we're unowned and the source is not the host, we can't destroy.
 			if ( !source.IsHost )
 			{
-				Log.Warning( $"ObjectDestroy: Only the host can destroy unowned networked objects. {source.DisplayName} attempted to destroy {obj.Name}." );
+				Log.Warning( $"ObjectDestroy: Only the host can destroy unowned networked objects. {source.Name} attempted to destroy {obj.Name}." );
 				return;
 			}
 		}
@@ -1209,14 +1277,14 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 			// If the source is not the owner and not the host, we can't destroy.
 			if ( !source.IsHost && obj._net.Owner != source.Id )
 			{
-				Log.Warning( $"ObjectDestroy: {source.DisplayName} attempted to destroy {obj.Name} but is not the owner. Owner is {obj._net.Owner}." );
+				Log.Warning( $"ObjectDestroy: {source.Name} attempted to destroy {obj.Name} but is not the owner. Owner is {obj._net.Owner}." );
 				return;
 			}
 
 			// If the source is the owner but not the host, check if they have permission to destroy.
 			if ( !source.IsHost && !source.CanDestroyObjects )
 			{
-				Log.Warning( $"ObjectDestroy: {source.DisplayName} attempted to destroy {obj.Name} but does not have CanDestroyObjects permission enabled." );
+				Log.Warning( $"ObjectDestroy: {source.Name} attempted to destroy {obj.Name} but does not have CanDestroyObjects permission enabled." );
 				return;
 			}
 		}

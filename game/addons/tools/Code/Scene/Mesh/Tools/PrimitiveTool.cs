@@ -4,7 +4,7 @@ namespace Editor.MeshEditor;
 /// Create different types of primitive meshes.
 /// </summary>
 [Title( "Primitive Tool" )]
-[Icon( "view_in_ar" )]
+[Icon( "meshtools/primitve_tools/create.png" )]
 [Alias( "tools.primitive-tool" )]
 public partial class PrimitiveTool( MeshTool tool ) : EditorTool
 {
@@ -21,7 +21,10 @@ public partial class PrimitiveTool( MeshTool tool ) : EditorTool
 
 	public override void OnDisabled()
 	{
-		Create();
+		if ( Game.IsPlaying )
+			Cancel();
+		else
+			Create();
 
 		Editor = null;
 	}

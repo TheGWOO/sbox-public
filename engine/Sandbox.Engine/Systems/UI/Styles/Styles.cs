@@ -113,6 +113,9 @@ public partial class Styles : BaseStyles
 
 	internal bool SetInternal( string styles, string filename, int lineoffset )
 	{
+		if ( string.IsNullOrWhiteSpace( styles ) )
+			return false;
+
 		bool success = false;
 
 		Parse p = new( styles, filename, lineoffset );
@@ -144,7 +147,7 @@ public partial class Styles : BaseStyles
 			bool wasSuccessful = Set( property, value );
 			if ( !wasSuccessful )
 			{
-				Log.Error( $"{value} is not valid with {property} {p.FileAndLine}" );
+				Log.Warning( $"{value} is not valid with {property} {p.FileAndLine}" );
 			}
 
 			var prop = new IStyleBlock.StyleProperty
@@ -167,6 +170,9 @@ public partial class Styles : BaseStyles
 
 	public bool Set( string styles )
 	{
+		if ( string.IsNullOrWhiteSpace( styles ) )
+			return false;
+
 		return SetInternal( styles, null, 0 );
 	}
 

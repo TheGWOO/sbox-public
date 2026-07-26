@@ -1,4 +1,4 @@
-﻿@using Sandbox.UI;
+@using Sandbox.UI;
 @using Sandbox;
 @namespace MenuProject.Settings
 @inherits Panel
@@ -40,11 +40,38 @@
             <SliderControl Value:bind=@VoiceVolume class="glass with-grow" Min="@(0)" Max="@(1)" Step="@(0.01f)" NumberFormat="0.##%"></SliderControl>
         </row>
 
+        <h2>Voice Input</h2>
+
+        <row class="with-gaps">
+            <cell class="glass with-padding is-label">
+                Voice Mode
+            </cell>
+            <ButtonGroup class="glass with-grow" ButtonClass="glass with-grow with-click" Options=@VoiceModeOptions Value:bind=@SelectedVoiceMode></ButtonGroup>
+        </row>
+
+        <h2>Simulation</h2>
+
+        <row class="with-gaps">
+            <cell class="glass with-padding is-label">
+                Acoustic Simulation
+            </cell>
+            <ButtonGroup class="glass with-grow" ButtonClass="glass with-grow with-click" Options=@OffOnOptions Value:bind=@AcousticSimulation></ButtonGroup>
+        </row>
+
+        <h2>Misc</h2>
+
         <row class="with-gaps">
             <cell class="glass with-padding is-label">
                 Background Audio
             </cell>
-            <ButtonGroup class="glass with-grow" ButtonClass="glass with-grow with-click" Options=@BackgroundAudioOptions Value:bind=@BackgroundAudio></ButtonGroup>
+            <ButtonGroup class="glass with-grow" ButtonClass="glass with-grow with-click" Options=@OffOnOptions Value:bind=@BackgroundAudio></ButtonGroup>
+        </row>
+
+        <row class="with-gaps">
+            <cell class="glass with-padding is-label">
+                Subtitles
+            </cell>
+            <ButtonGroup class="glass with-grow" ButtonClass="glass with-grow with-click" Options=@OffOnOptions Value:bind=@Subtitles></ButtonGroup>
         </row>
 
     </div>
@@ -59,7 +86,10 @@
     public float GlobalVolume { get; set; }
     public float MusicVolume { get; set; }
     public float VoiceVolume { get; set; }
+    public VoiceMode SelectedVoiceMode { get; set; }
     public bool BackgroundAudio { get; set; }
+    public bool AcousticSimulation { get; set; }
+    public bool Subtitles { get; set; }
 
     public string AudioDevice { get; set; }
 
@@ -73,7 +103,14 @@
         OnCancel();
     }
 
-	List<Option> BackgroundAudioOptions = new List<Option>()
+	List<Option> VoiceModeOptions = new List<Option>()
+    {
+        new Option("Push-to-Talk", VoiceMode.PushToTalk),
+        new Option("Open Microphone", VoiceMode.OpenMicrophone),
+        new Option("Disabled", VoiceMode.Disabled),
+    };
+
+	List<Option> OffOnOptions = new List<Option>()
     {
         new Option("Off", false),
         new Option("On", true),
@@ -98,27 +135,36 @@
         {
             Sandbox.Internal.AudioSettings.SetActiveDevice(devices.First().Id);
         }
+        ConsoleSystem.SetValue("snd_simulation_enable", true);
         ConsoleSystem.SetValue("volume", 1.0f);
         ConsoleSystem.SetValue("music_volume", 1.0f);
         ConsoleSystem.SetValue("voip_volume", 1.0f);
+        ConsoleSystem.SetValue("voip_mode", (int)VoiceMode.PushToTalk);
         ConsoleSystem.SetValue("snd_mute_losefocus", false);
+        ConsoleSystem.SetValue("snd_subtitles", false);
     }
 
     public void OnCancel()
     {
+        AcousticSimulation = ConsoleSystem.GetValue("snd_simulation_enable").ToBool();
         GlobalVolume = ConsoleSystem.GetValue("volume").ToFloat();
         MusicVolume = ConsoleSystem.GetValue("music_volume").ToFloat();
         VoiceVolume = ConsoleSystem.GetValue("voip_volume").ToFloat();
+        SelectedVoiceMode = Enum.Parse<VoiceMode>(ConsoleSystem.GetValue("voip_mode"), true);
         BackgroundAudio = !ConsoleSystem.GetValue("snd_mute_losefocus").ToBool();
+        Subtitles = ConsoleSystem.GetValue("snd_subtitles").ToBool();
         AudioDevice = Sandbox.Internal.AudioSettings.GetActiveDevice().Id;
     }
 
     public void OnApply()
     {
         Sandbox.Internal.AudioSettings.SetActiveDevice((string)AudioDevice);
+        ConsoleSystem.SetValue("snd_simulation_enable", AcousticSimulation);
         ConsoleSystem.SetValue("volume", GlobalVolume);
         ConsoleSystem.SetValue("music_volume", MusicVolume);
         ConsoleSystem.SetValue("voip_volume", VoiceVolume);
+        ConsoleSystem.SetValue("voip_mode", (int)SelectedVoiceMode);
         ConsoleSystem.SetValue("snd_mute_losefocus", !BackgroundAudio);
+        ConsoleSystem.SetValue("snd_subtitles", Subtitles);
     }
 }

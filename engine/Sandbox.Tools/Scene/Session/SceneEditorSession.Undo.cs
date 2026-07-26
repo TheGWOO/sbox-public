@@ -209,7 +209,14 @@ internal sealed class SceneUndoSnapshot : IDisposable
 			ComponentRefs = components.Select( ComponentReference.FromInstance ).ToArray();
 
 			var serializeOptions = new GameObject.SerializeOptions { };
-			State = components.Select( comp => comp.Serialize( serializeOptions ) ).ToArray();
+			State = components.Select( comp =>
+			{
+				using var blobs = BlobDataSerializer.Capture();
+
+				var json = comp.Serialize( serializeOptions );
+				blobs.SaveTo( json );
+				return json;
+			} ).ToArray();
 		}
 
 		public void Restore( Scene scene )
@@ -230,13 +237,14 @@ internal sealed class SceneUndoSnapshot : IDisposable
 
 		public void PostRestore( Scene scene )
 		{
-			foreach ( var compRef in ComponentRefs )
+			for ( int i = 0; i < ComponentRefs.Length; i++ )
 			{
-				var comp = compRef.Resolve( scene );
-				if ( comp.IsValid() )
-				{
-					compRef.Resolve( scene )?.PostDeserialize();
-				}
+				var comp = ComponentRefs[i].Resolve( scene );
+				if ( !comp.IsValid() )
+					continue;
+
+				using var blobs = BlobDataSerializer.LoadFrom( State[i] );
+				comp.PostDeserialize();
 			}
 		}
 
@@ -283,7 +291,12 @@ internal sealed class SceneUndoSnapshot : IDisposable
 				var serializeOptions = new GameObject.SerializeOptions { IgnoreChildren = !flags.HasFlag( GameObjectUndoFlags.Children ), IgnoreComponents = !flags.HasFlag( GameObjectUndoFlags.Components ) };
 				GameObjectRefs.Add( GameObjectReference.FromInstance( go ) );
 				if ( go.IsOutermostPrefabInstanceRoot ) go.PrefabInstance.RefreshPatch();
-				State.Add( go.Serialize( serializeOptions ) );
+
+				using var blobs = BlobDataSerializer.Capture();
+
+				var json = go.Serialize( serializeOptions );
+				blobs.SaveTo( json );
+				State.Add( json );
 				GameObjectNextSiblingRefs.Add( go.GetNextSibling( false ).IsValid() ? GameObjectReference.FromInstance( go.GetNextSibling( false ) ) : GameObjectReference.FromId( Guid.Empty ) );
 				GameObjectParentRefs.Add( go.Parent.IsValid() ? GameObjectReference.FromInstance( go.Parent ) : GameObjectReference.FromId( Guid.Empty ) );
 			}
@@ -312,7 +325,7 @@ internal sealed class SceneUndoSnapshot : IDisposable
 			}
 		}
 
-		public void PostRestore( Scene scene )
+		public void PostRestore( Scene scene, BlobDataSerializer.BlobContext blobs )
 		{
 			// second pass fully desiarizes and restores hierachy
 			for ( int i = 0; i < State.Count; i++ )
@@ -324,6 +337,9 @@ internal sealed class SceneUndoSnapshot : IDisposable
 					continue;
 				}
 
+				// Merge blobs into the shared context - component PostDeserialize is deferred to the
+				// batch flush, so a per-object context would be gone before its blob data (eg. mesh) is read.
+				blobs.LoadFrom( State[i] );
 				go.Deserialize( State[i], new GameObject.DeserializeOptions { IsRefreshing = true } );
 			}
 
@@ -500,7 +516,10 @@ internal sealed class SceneUndoSnapshot : IDisposable
 		// if deletion is requested, we need to capture the whole scene
 		if ( _captureDestructions )
 		{
+			using var blobs = BlobDataSerializer.Capture();
+
 			scene = _session.Scene.Serialize();
+			blobs.SaveTo( scene );
 		}
 
 		SelectionSnapshot selection = null;
@@ -717,6 +736,8 @@ internal sealed class SceneUndoSnapshot : IDisposable
 				{
 					_session.Scene.Clear();
 
+					using var blobs = BlobDataSerializer.LoadFrom( preChangeStateCopy.Scene );
+
 					using ( CallbackBatch.Isolated() )
 					{
 						_session.Scene.Deserialize( preChangeStateCopy.Scene );
@@ -728,13 +749,15 @@ internal sealed class SceneUndoSnapshot : IDisposable
 				}
 				else
 				{
+					// Must outlive the callback batch: deferred PostDeserialize reads blob data on flush
+					using var blobs = BlobDataSerializer.LoadFromMemory( default );
 					using var batch = CallbackBatch.Batch();
 
 					preChangeStateCopy.GameObjectSnapshot?.Restore( _session.Scene );
 					preChangeStateCopy.ComponentSnapshot?.Restore( _session.Scene );
 
 					preChangeStateCopy.ComponentSnapshot?.PostRestore( _session.Scene );
-					preChangeStateCopy.GameObjectSnapshot?.PostRestore( _session.Scene );
+					preChangeStateCopy.GameObjectSnapshot?.PostRestore( _session.Scene, blobs );
 
 					// delete created components
 					foreach ( var compRef in createdComponentRefs )
@@ -761,6 +784,8 @@ internal sealed class SceneUndoSnapshot : IDisposable
 
 				using var sceneScope = _session.Scene.Push();
 
+				// Must outlive the callback batch: deferred PostDeserialize reads blob data on flush
+				using var blobs = BlobDataSerializer.LoadFromMemory( default );
 				using var batch = CallbackBatch.Batch();
 
 				// delete destroyed components
@@ -780,7 +805,7 @@ internal sealed class SceneUndoSnapshot : IDisposable
 				disposeState.ComponentSnapshot?.Restore( _session.Scene );
 
 				// Do actual deserialization
-				disposeState.GameObjectSnapshot?.PostRestore( _session.Scene );
+				disposeState.GameObjectSnapshot?.PostRestore( _session.Scene, blobs );
 				disposeState.ComponentSnapshot?.PostRestore( _session.Scene );
 
 				// restore selection

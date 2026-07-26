@@ -24,6 +24,28 @@ public sealed partial class SceneCamera : IDisposable, IManagedCamera
 
 	internal Matrix ProjectionMatrix => Frustum.GetProj();
 
+	/// <summary>
+	/// World to projection matrix using the reverse-Z projection (matches the rendered depth buffer:
+	/// far plane = 0, near plane = 1), transposed for row-vector use with <see cref="Matrix.Transform(Vector4)"/>.
+	/// <para>
+	/// The engine's native matrices are column-vector (GPU <c>mul( M, v )</c>) while
+	/// <see cref="Matrix.Transform(Vector4)"/> is row-vector (<c>v · M</c>), so we hand back the transpose.
+	/// Transform a homogeneous world point — <c>matrix.Transform( new Vector4( pos, 1 ) )</c> — to get its
+	/// reverse-Z clip-space coordinate (before the perspective divide).
+	/// </para>
+	/// </summary>
+	internal Matrix ReverseZViewProjectionMatrix => Frustum.GetReverseZViewProjTranspose();
+
+	/// <summary>
+	/// Returns the normalized screen coverage (0-1) of a sphere at the given origin and radius.
+	/// </summary>
+	internal float ComputeScreenSize( Vector3 origin, float radius ) => Frustum.ComputeScreenSize( origin, radius );
+
+	/// <summary>
+	/// Returns the screen width in pixels of a sphere at the given origin and radius.
+	/// </summary>
+	internal float ComputeScreenSizeInPixels( Vector3 origin, float radius ) => Frustum.ComputeScreenSize( origin, radius ) * Size.x;
+
 	public RenderAttributes Attributes { get; }
 
 	/// <summary>
@@ -442,6 +464,12 @@ public sealed partial class SceneCamera : IDisposable, IManagedCamera
 	internal bool EnableEngineOverlays { get; set; } = false;
 
 	/// <summary>
+	/// Whether the UI stage layer should be created for this camera render.
+	/// When false, the native pipeline will skip the UI layer entirely.
+	/// </summary>
+	internal bool RenderUI { get; set; } = true;
+
+	/// <summary>
 	/// When true, rendering from this camera won't request higher mip levels from
 	/// the texture streaming system. Used by cubemap rendering to prevent envmap probes
 	/// from pulling in full-resolution textures across the entire map.
@@ -533,6 +561,13 @@ public sealed partial class SceneCamera : IDisposable, IManagedCamera
 
 		// new stuff is commandlist based, so is total thread safe
 		OnRenderStageHook?.InvokeWithWarning( renderStage, this );
+
+		// Editor viewports don't use the game UI render hook, so capture the selected camera after its UI stage.
+		if ( renderStage == Rendering.Stage.AfterUI && IsRecordingCamera && Application.IsEditor && !Game.IsPlaying )
+		{
+			ScreenCaptureUtility.CaptureFrame();
+			ScreenCaptureUtility.DrawRecordingBorder();
+		}
 	}
 
 	/// <summary>
@@ -576,6 +611,9 @@ public sealed partial class SceneCamera : IDisposable, IManagedCamera
 	/// </summary>
 	public Ray GetRay( Vector2 cursorPosition, Vector3 screenSize )
 	{
+		if ( screenSize.x <= 0.0f || screenSize.y <= 0.0f )
+			return new Ray( Position, Rotation.Forward );
+
 		if ( !Ortho )
 		{
 			var aspect = screenSize.x / screenSize.y;
@@ -948,4 +986,8 @@ public enum SceneCameraDebugMode
 	Overdraw = 101,
 	[Title( "Ambient Occlusion" ), Icon( "radio_button_checked" )]
 	AmbientOcclusion = 14,
+	[Title( "Motion Vectors" ), Icon( "animation" )]
+	MotionVectors = 102,
+	[Title( "Reactive Mask" ), Icon( "shield" )]
+	ReactiveMask = 103,
 }

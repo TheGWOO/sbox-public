@@ -1,12 +1,20 @@
 ﻿
 namespace Sandbox;
 
-partial class MapInstance
+partial class MapInstance : IHasPhysicsDescription
 {
 	private PhysicsGroupDescription Physics;
 	private List<PhysicsBody> Bodies { get; set; } = new();
 	private List<CollisionEventSystem> CollisionEvents { get; set; } = new();
 	private MapCollider Collider { get; set; }
+
+	PhysicsGroupDescription IHasPhysicsDescription.Physics => Physics;
+
+	void IHasPhysicsDescription.OnPhysicsReloaded()
+	{
+		RemoveCollision();
+		AddCollision();
+	}
 
 	void OnEnableCollisionChanged()
 	{
@@ -134,7 +142,7 @@ partial class MapInstance
 
 		var shapeCount = body.ShapeCount;
 		var indicesCount = part.native.GetCollisionAttributeCount();
-		var attributeCount = Physics.native.GetCollisionAttributeCount();
+		var attributeCount = Physics.CollisionAttributeCount;
 
 		if ( indicesCount > 0 )
 		{

@@ -43,7 +43,7 @@ public partial class Scene : GameObject
 
 		if ( sceneFile.ResourceName != null )
 		{
-			Name = sceneFile.ResourceName.ToTitleCase();
+			Name = sceneFile.ResourceName;
 		}
 
 		ProcessDeletes();
@@ -59,9 +59,22 @@ public partial class Scene : GameObject
 				// get all the gameobjects that should survive
 				var savedObjects = GetAllObjects( false ).Where( x => x.Flags.Contains( GameObjectFlags.DontDestroyOnLoad ) );
 
-				// move them to the scene root
+				// move only DontDestroyOnLoad roots that are not already under another DontDestroyOnLoad ancestor to the scene root
 				foreach ( var saved in savedObjects )
 				{
+					bool hasSurvivingAncestor = false;
+					for ( var parent = saved.Parent; parent != this; parent = parent.Parent )
+					{
+						if ( parent?.Flags.Contains( GameObjectFlags.DontDestroyOnLoad ) == true )
+						{
+							hasSurvivingAncestor = true;
+							break;
+						}
+					}
+
+					if ( hasSurvivingAncestor )
+						continue;
+
 					saved.SetParent( this );
 				}
 
@@ -268,7 +281,8 @@ public partial class Scene : GameObject
 
 	JsonNode SerializeGameObjectSystems()
 	{
-		var systemsToSerialize = new Dictionary<string, Dictionary<string, object>>();
+		// Sorted by type name so the serialized order is stable across saves.
+		var systemsToSerialize = new SortedDictionary<string, SortedDictionary<string, object>>( StringComparer.Ordinal );
 
 		foreach ( var system in GetSystems() )
 		{
@@ -276,7 +290,7 @@ public partial class Scene : GameObject
 			if ( systemType is null ) continue;
 
 			var systemTypeName = systemType.FullName;
-			Dictionary<string, object> propertiesToSerialize = null;
+			SortedDictionary<string, object> propertiesToSerialize = null;
 
 			foreach ( var property in systemType.Properties.Where( x => x.HasAttribute<PropertyAttribute>() ) )
 			{
@@ -284,7 +298,7 @@ public partial class Scene : GameObject
 
 				var currentValue = property.GetValue( system );
 				var hasGlobalValue = ProjectSettings.Systems.TryGetPropertyValue( systemType, property, out var globalValue );
-				var compareValue = hasGlobalValue ? globalValue : property.GetCustomAttribute<DefaultValueAttribute>()?.Value;
+				var compareValue = hasGlobalValue ? globalValue : SystemsConfig.GetDefaultValue( property );
 
 				var currentJson = JsonSerializer.SerializeToNode( currentValue, Json.options );
 				var compareJson = JsonSerializer.SerializeToNode( compareValue, Json.options );
@@ -292,7 +306,7 @@ public partial class Scene : GameObject
 				// Is this slow?
 				if ( !JsonNode.DeepEquals( currentJson, compareJson ) )
 				{
-					propertiesToSerialize ??= new Dictionary<string, object>();
+					propertiesToSerialize ??= new SortedDictionary<string, object>( StringComparer.Ordinal );
 					propertiesToSerialize[property.Name] = currentValue;
 				}
 			}
@@ -346,7 +360,12 @@ public partial class Scene : GameObject
 			}
 		}
 
-		if ( data.TryGetPropertyValue( "GameObjectSystems", out var systemOverridesNode ) )
+		//
+		// We don't want system scene loads to overwrite the main scene's system properties.
+		// System scenes can add GameObjects, but they should not reconfigure systems that
+		// already belong to the main scene (same reason NavMesh is guarded below).
+		//
+		if ( !isSystemScene && data.TryGetPropertyValue( "GameObjectSystems", out var systemOverridesNode ) )
 		{
 			ApplyGameObjectSystemOverrides( systemOverridesNode );
 		}

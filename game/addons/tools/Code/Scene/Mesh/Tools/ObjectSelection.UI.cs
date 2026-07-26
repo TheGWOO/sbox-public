@@ -1,5 +1,6 @@
 ﻿
 using HalfEdgeMesh;
+using System.Text.Json.Nodes;
 
 namespace Editor.MeshEditor;
 
@@ -50,10 +51,11 @@ partial class ObjectSelection
 					var grid = Layout.Row();
 					grid.Spacing = 4;
 
-					CreateButton( "Set Origin To Pivot", "gps_fixed", "mesh.set-origin-to-pivot", SetOriginToPivot, _meshes.Length > 0, grid );
-					CreateButton( "Center Origin", "center_focus_strong", "mesh.center-origin", CenterOrigin, _meshes.Length > 0, grid );
-					CreateButton( "Merge Meshes", "join_full", "mesh.merge-meshes", MergeMeshes, _meshes.Length > 1, grid );
-					CreateButton( "Merge Meshes By Edge", "link", null, MergeMeshesByEdge, _meshes.Length > 1, grid );
+					CreateButton( "Set Origin To Pivot", "meshtools/object_selection_buttons/set_origin_to_pivot.png", "mesh.set-origin-to-pivot", SetOriginToPivot, _gos.Length > 0, grid );
+					CreateButton( "Center Origin", "meshtools/object_selection_buttons/center_origin.png", "mesh.center-origin", CenterOrigin, _meshes.Length > 0, grid );
+					CreateButton( "Merge Meshes", "meshtools/object_selection_buttons/merge_meshes.png", "mesh.merge-meshes", MergeMeshes, _meshes.Length > 1, grid );
+					CreateButton( "Merge Meshes By Edge", "meshtools/object_selection_buttons/merge_meshes_by_edge.png", null, MergeMeshesByEdge, _meshes.Length > 1, grid );
+					CreateButton( "Separate Mesh Components", "meshtools/object_selection_buttons/separate_mesh_components.png", "mesh.separate-components", SeparateComponents, _meshes.Length > 0, grid );
 
 					grid.AddStretchCell();
 
@@ -64,10 +66,10 @@ partial class ObjectSelection
 					var grid = Layout.Row();
 					grid.Spacing = 4;
 
-					CreateButton( "Flip Faces", "flip", "mesh.flip-all-mesh-faces", FlipMesh, _meshes.Length > 0, grid );
-					CreateButton( "Bake Scale", "straighten", null, BakeScale, _meshes.Length > 0, grid );
-					CreateButton( "Convert To Mesh", "auto_mode", "mesh.convert-model-to-mesh", ConvertModelsToMeshes, _modelRenderers.Length > 0, grid );
-					CreateButton( "Save To Model", "save", null, SaveToModel, _meshes.Length > 0, grid );
+					CreateButton( "Flip Faces", "meshtools/face_tool/flip_all_faces.png", "mesh.flip-all-mesh-faces", FlipMesh, _meshes.Length > 0, grid );
+					CreateButton( "Bake Scale", "meshtools/object_selection_buttons/bake_scale.png", null, BakeScale, _meshes.Length > 0, grid );
+					CreateButton( "Convert To Mesh", "meshtools/object_selection_buttons/convert_to_mesh.png", "mesh.convert-model-to-mesh", ConvertModelsToMeshes, _modelRenderers.Length > 0, grid );
+					CreateButton( "Save To Model", "meshtools/object_selection_buttons/save_to_model.png", null, SaveToModel, _meshes.Length > 0, grid );
 
 					grid.AddStretchCell();
 
@@ -81,11 +83,11 @@ partial class ObjectSelection
 				var grid = Layout.Row();
 				grid.Spacing = 4;
 
-				CreateButton( "Previous", "chevron_left", "mesh.previous-pivot", PreviousPivot, _gos.Length > 0, grid );
-				CreateButton( "Next", "chevron_right", "mesh.next-pivot", NextPivot, _gos.Length > 0, grid );
-				CreateButton( "Clear", "restart_alt", "mesh.clear-pivot", ClearPivot, _gos.Length > 0, grid );
-				CreateButton( "Center", "center_focus_strong", "mesh.center-pivot", CenterPivot, _gos.Length > 0, grid );
-				CreateButton( "World Origin", "language", "mesh.zero-pivot", ZeroPivot, _gos.Length > 0, grid );
+				CreateButton( "Previous", "meshtools/pivot_tools/previous.png", "mesh.previous-pivot", PreviousPivot, _gos.Length > 0, grid );
+				CreateButton( "Next", "meshtools/pivot_tools/next.png", "mesh.next-pivot", NextPivot, _gos.Length > 0, grid );
+				CreateButton( "Clear", "meshtools/pivot_tools/clear.png", "mesh.clear-pivot", ClearPivot, _gos.Length > 0, grid );
+				CreateButton( "Center", "meshtools/object_selection_buttons/center_origin.png", "mesh.center-pivot", CenterPivot, _gos.Length > 0, grid );
+				CreateButton( "World Origin", "meshtools/pivot_tools/world_origin.png", "mesh.zero-pivot", ZeroPivot, _gos.Length > 0, grid );
 
 				grid.AddStretchCell();
 
@@ -98,8 +100,9 @@ partial class ObjectSelection
 				var grid = Layout.Row();
 				grid.Spacing = 4;
 
-				CreateButton( "Clipping Tool", "content_cut", "mesh.open-clipping-tool", OpenClippingTool, _meshes.Length > 0, grid );
-				CreateButton( "Mirror Tool", "flip", "mesh.mirror-tool", OpenMirrorTool, _gos.Length > 0, grid );
+				CreateButton( "Clipping Tool", "meshtools/face_tool/clipping_tool.png", "mesh.open-clipping-tool", OpenClippingTool, _meshes.Length > 0, grid );
+				CreateButton( "Mirror Tool", "meshtools/object_selection_buttons/mirror_tool.png", "mesh.mirror-tool", OpenMirrorTool, _gos.Length > 0, grid );
+				CreateButton( "Boolean Tool", "meshtools/object_selection_buttons/boolean_tool.png", "mesh.boolean-tool", OpenBooleanTool, _meshes.Length == 2, grid );
 
 				grid.AddStretchCell();
 
@@ -109,10 +112,98 @@ partial class ObjectSelection
 			Layout.AddStretchCell();
 		}
 
+		[Shortcut( "mesh.separate-components", "ALT+N", typeof( SceneViewWidget ) )]
+		void SeparateComponents()
+		{
+			if ( _meshes.Length == 0 ) return;
+
+			using var scope = SceneEditorSession.Scope();
+
+			var options = new GameObject.SerializeOptions();
+
+			using ( SceneEditorSession.Active.UndoScope( "Separate Mesh Components" )
+				.WithComponentChanges( _meshes )
+				.WithGameObjectCreations()
+				.WithGameObjectDestructions( _meshes.Select( x => x.GameObject ) )
+				.Push() )
+			{
+				var selection = SceneEditorSession.Active.Selection;
+				selection.Clear();
+
+				var newSelection = new List<GameObject>();
+
+				foreach ( var meshComponent in _meshes )
+				{
+					var mesh = meshComponent.Mesh;
+					if ( mesh is null ) continue;
+
+					var allFaces = mesh.FaceHandles.ToList();
+					mesh.FindFaceIslands( allFaces, out var islands );
+
+					if ( islands.Count <= 1 )
+					{
+						newSelection.Add( meshComponent.GameObject );
+						continue;
+					}
+
+					foreach ( var island in islands )
+					{
+						var go = new GameObject( meshComponent.GameObject.Name );
+						go.WorldTransform = meshComponent.WorldTransform;
+						go.MakeNameUnique();
+
+						meshComponent.GameObject.AddSibling( go, false );
+
+						var newMeshComponent = go.Components.Create<MeshComponent>( true );
+						var json = meshComponent.Serialize( options );
+						SceneUtility.MakeIdGuidsUnique( json as JsonObject );
+
+						newMeshComponent.DeserializeImmediately( json as JsonObject );
+
+						var newMesh = newMeshComponent.Mesh;
+						var islandIndices = new HashSet<int>( island.Select( f => f.Index ) );
+
+						var facesToRemove = newMesh.FaceHandles
+							.Where( f => !islandIndices.Contains( f.Index ) )
+							.ToArray();
+
+						newMesh.RemoveFaces( facesToRemove );
+
+						var bounds = newMesh.CalculateBounds( go.WorldTransform );
+						var center = bounds.Center;
+						var localCenter = go.WorldTransform.PointToLocal( center );
+
+						newMesh.ApplyTransform( new Transform( -localCenter ) );
+						go.WorldPosition = center;
+
+						newMeshComponent.RebuildMesh();
+
+						newSelection.Add( go );
+					}
+
+					meshComponent.GameObject.Destroy();
+				}
+
+				if ( newSelection.Count > 0 )
+				{
+					foreach ( var go in newSelection )
+						selection.Add( go );
+				}
+			}
+		}
+
 		[Shortcut( "mesh.mirror-tool", "SHIFT+F", typeof( SceneViewWidget ) )]
 		void OpenMirrorTool()
 		{
 			var tool = new MirrorTool( nameof( ObjectSelection ) );
+			tool.Manager = _tool.Tool.Manager;
+			_tool.Tool.CurrentTool = tool;
+		}
+
+		[Shortcut( "mesh.boolean-tool", "", typeof( SceneViewWidget ) )]
+		void OpenBooleanTool()
+		{
+			var tool = new BooleanTool( nameof( ObjectSelection ) );
 			tool.Manager = _tool.Tool.Manager;
 			_tool.Tool.CurrentTool = tool;
 		}
@@ -125,10 +216,10 @@ partial class ObjectSelection
 			_tool.Tool.CurrentTool = tool;
 		}
 
-		[Shortcut( "mesh.previous-pivot", "N+MWheelDn", typeof( SceneViewWidget ) )]
+		[Shortcut( "mesh.previous-pivot", "Shift+MWheelDown", typeof( SceneViewWidget ) )]
 		public void PreviousPivot() => _tool.PreviousPivot();
 
-		[Shortcut( "mesh.next-pivot", "N+MWheelUp", typeof( SceneViewWidget ) )]
+		[Shortcut( "mesh.next-pivot", "Shift+MWheelUp", typeof( SceneViewWidget ) )]
 		public void NextPivot() => _tool.NextPivot();
 
 		[Shortcut( "mesh.center-pivot", "Ctrl+Home", typeof( SceneViewWidget ) )]
@@ -145,14 +236,23 @@ partial class ObjectSelection
 		{
 			using var scope = SceneEditorSession.Scope();
 
+			var boundsObjects = _gos
+				.Where( x => x.IsValid() && x.GetComponent<MeshComponent>() is null )
+				.ToArray();
+
 			using ( SceneEditorSession.Active.UndoScope( "Set Origin To Pivot" )
-				.WithGameObjectChanges( _meshes.Select( x => x.GameObject ), GameObjectUndoFlags.Properties )
-				.WithComponentChanges( _meshes )
+				.WithGameObjectChanges( _meshes.Select( x => x.GameObject ).Concat( boundsObjects ), GameObjectUndoFlags.Properties )
+				.WithComponentChanges( _meshes.Cast<Component>().Concat( boundsObjects.SelectMany( x => x.Components.GetAll() ) ) )
 				.Push() )
 			{
 				foreach ( var mesh in _meshes )
 				{
 					SetMeshOrigin( mesh, _tool.Pivot );
+				}
+
+				foreach ( var go in boundsObjects )
+				{
+					SetObjectOrigin( go, _tool.Pivot );
 				}
 			}
 		}
@@ -176,6 +276,7 @@ partial class ObjectSelection
 			_tool.ClearPivot();
 		}
 
+		[Shortcut( "mesh.bake-scale", "", typeof( SceneViewWidget ) )]
 		public void BakeScale()
 		{
 			using var scope = SceneEditorSession.Scope();
@@ -192,6 +293,7 @@ partial class ObjectSelection
 			}
 		}
 
+		[Shortcut( "mesh.flip-all-mesh-faces", "F", typeof( SceneViewWidget ) )]
 		public void FlipMesh()
 		{
 			using var scope = SceneEditorSession.Scope();
@@ -289,6 +391,24 @@ partial class ObjectSelection
 				var selection = SceneEditorSession.Active.Selection;
 				selection.Set( sourceMesh.GameObject );
 			}
+		}
+
+		[Shortcut( "mesh.frame-selection", "SHIFT+A", typeof( SceneViewWidget ) )]
+		private void FrameSelection()
+		{
+			if ( _gos.Length == 0 )
+				return;
+
+			var bounds = _gos[0].GetBounds()
+				.AddBBox( BBox.FromPositionAndSize( _gos[0].WorldPosition, 16 ) );
+
+			for ( var i = 1; i < _gos.Length; i++ )
+			{
+				bounds = bounds.AddBBox( _gos[i].GetBounds() );
+				bounds = bounds.AddBBox( BBox.FromPositionAndSize( _gos[i].WorldPosition, 16 ) );
+			}
+
+			_gos[0].Scene.Editor.FrameTo( bounds );
 		}
 
 		public void MergeMeshesByEdge()
@@ -412,6 +532,33 @@ partial class ObjectSelection
 			meshComponent.Mesh.ApplyTransform( new Transform( -localCenter ) );
 			meshComponent.WorldPosition = origin;
 			meshComponent.RebuildMesh();
+		}
+
+		static void SetObjectOrigin( GameObject go, Vector3 origin )
+		{
+			if ( !go.IsValid() ) return;
+
+			var oldTransform = go.WorldTransform;
+			go.WorldPosition = origin;
+			var newTransform = go.WorldTransform;
+
+			foreach ( var component in go.Components.GetAll() )
+			{
+				var serialized = component.GetSerialized();
+				if ( serialized is null ) continue;
+
+				foreach ( var prop in serialized.Where( p => p.PropertyType == typeof( BBox ) && p.IsEditable ) )
+				{
+					var bounds = prop.GetValue<BBox>();
+
+					var worldMins = oldTransform.PointToWorld( bounds.Mins );
+					var worldMaxs = oldTransform.PointToWorld( bounds.Maxs );
+
+					prop.SetValue( new BBox(
+						newTransform.PointToLocal( worldMins ),
+						newTransform.PointToLocal( worldMaxs ) ) );
+				}
+			}
 		}
 
 		static void BakeScale( MeshComponent meshComponent )

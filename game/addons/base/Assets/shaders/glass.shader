@@ -22,8 +22,7 @@ FEATURES
 //=========================================================================================================================
 MODES
 {
-    Forward();                                               // Indicates this shader will be used for main rendering
-    ToolsShadingComplexity("tools_shading_complexity.shader"); // Shows how expensive drawing is in debug view
+    Forward(); // Indicates this shader will be used for main rendering
     Depth( S_MODE_DEPTH );
 }
 
@@ -46,6 +45,10 @@ struct VertexInput
 struct PixelInput
 {
     #include "common/pixelinput.hlsl"
+
+    #if ( PROGRAM == VFX_PROGRAM_PS )
+        bool bIsFrontface : SV_IsFrontFace;
+    #endif
 };
 
 //=========================================================================================================================
@@ -106,6 +109,7 @@ PS
     #include "common/pixel.hlsl"
     #include "common/classes/Depth.hlsl"
 
+    RenderState( CullMode, F_RENDER_BACKFACES ? NONE : DEFAULT );
     BoolAttribute(bWantsFBCopyTexture, S_GLASS_QUALITY != GLASS_CHEAP );
     
     Texture2D g_tFrameBufferCopyTexture < Attribute("FrameBufferCopyTexture");   SrgbRead( false ); >;    
@@ -132,8 +136,8 @@ PS
 
         float3 g_flTintColorB < UiType(Color); Default3(1.0, 1.0, 1.0); UiGroup("MaterialB,10/90"); > ;
 
-        Texture2D g_tColorB < Channel(RGB, AlphaWeighted(TextureColorB, TextureTranslucency), Srgb); Channel(A, Box(TextureTranslucencyB), Linear); OutputFormat(BC7); SrgbRead(true); > ;
-        Texture2D g_tNormalB < Channel(RGB, Box(TextureNormalB), Linear); Channel(A, Box(TextureTintMask), Linear); OutputFormat(DXT5); SrgbRead(false); > ;
+        Texture2D g_tColorB < Channel(RGB, AlphaWeighted(TextureColorB, TextureTranslucencyB), Srgb); Channel(A, Box(TextureTranslucencyB), Linear); OutputFormat(BC7); SrgbRead(true); > ;
+        Texture2D g_tNormalB < Channel(RGB, Box(TextureNormalB), Linear); Channel(A, Box(TextureTintMaskB), Linear); OutputFormat(DXT5); SrgbRead(false); > ;
         Texture2D g_tRmaB < Channel(R, Box(TextureRoughnessB), Linear); Channel(G, Box(TextureMetalnessB), Linear); Channel(B, Box(TextureAmbientOcclusionB), Linear); Channel(A, Box(TextureBlendMaskB), Linear); OutputFormat(BC7); SrgbRead(false); > ;
     #endif
     
@@ -146,7 +150,7 @@ PS
             float4 vColor = g_tColorB.Sample(TextureFiltering, i.vTextureCoords.xy);
             float4 vNormalTs = g_tNormalB.Sample(TextureFiltering, i.vTextureCoords.xy);
             float4 vRMA = g_tRmaB.Sample(TextureFiltering, i.vTextureCoords.xy);
-            float3 vTintColor = g_flTintColor;
+            float3 vTintColor = g_flTintColorB;
             float3 vEmission = float3(0.0f, 0.0f, 0.0f); // Default emission value
 
             material.Albedo = vColor.rgb * vTintColor.rgb;
@@ -184,6 +188,12 @@ PS
             return 1;
         }
         #endif
+
+        // refractive glass freaks out on backfaces if normals aren't flipped
+        if ( !i.bIsFrontface )
+        {
+            m.Normal = -m.Normal;
+        }
 
         m.Metalness = 0; // Glass is always non-metallic
 

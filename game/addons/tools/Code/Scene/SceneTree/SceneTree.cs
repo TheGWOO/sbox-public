@@ -2,7 +2,7 @@
 
 namespace Editor;
 
-[Dock( "Editor", "Hierarchy", "list" )]
+[Dock( "Editor", "Hierarchy", "list", DockArea.Right )]
 public partial class SceneTreeWidget : Widget
 {
 	public TreeView TreeView { get; private set; }
@@ -195,9 +195,6 @@ public partial class SceneTreeWidget : Widget
 				if ( !go.IsValid() ) continue;
 
 				if ( go.Parent is null || go.Flags.HasFlag( GameObjectFlags.Hidden ) )
-					continue;
-
-				if ( go.IsPrefabInstance && !go.IsPrefabInstanceRoot )
 					continue;
 
 				if ( !go.Name.Contains( search, StringComparison.OrdinalIgnoreCase ) )

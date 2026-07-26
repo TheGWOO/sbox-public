@@ -213,9 +213,16 @@ public partial class TextEntry : BaseControl
 		var pasteResult = new string( text.Where( CanEnterCharacter ).ToArray() );
 		ReplaceEmojisInText( ref pasteResult );
 
-		if ( MaxLength.HasValue && TextLength > MaxLength )
+		if ( MaxLength.HasValue )
 		{
-			pasteResult = pasteResult.Substring( 0, MaxLength.Value - CaretPosition );
+			// MaxLength and TextLength count text elements, not chars - truncate the
+			// same way so we don't cut a surrogate pair or combining sequence in half
+			var remaining = Math.Max( MaxLength.Value - TextLength, 0 );
+			var info = new StringInfo( pasteResult );
+			if ( info.LengthInTextElements > remaining )
+			{
+				pasteResult = remaining > 0 ? info.SubstringByTextElements( 0, remaining ) : "";
+			}
 		}
 
 		Text ??= "";
@@ -241,6 +248,12 @@ public partial class TextEntry : BaseControl
 	{
 		// dont' send to parent
 		e.StopPropagation = true;
+	}
+
+	protected override void OnEscape( PanelEvent e )
+	{
+		Cancel();
+		e.StopPropagation();
 	}
 
 
@@ -410,14 +423,7 @@ public partial class TextEntry : BaseControl
 
 		if ( button == "escape" )
 		{
-			if ( AutoCompletePanel.IsValid() )
-			{
-				AutoCompleteCancel();
-				return;
-			}
-
-			Blur();
-			CreateEvent( "oncancel" );
+			Cancel();
 			return;
 		}
 
@@ -432,6 +438,18 @@ public partial class TextEntry : BaseControl
 		}
 
 		base.OnButtonTyped( e );
+	}
+
+	void Cancel()
+	{
+		if ( AutoCompletePanel.IsValid() )
+		{
+			AutoCompleteCancel();
+			return;
+		}
+
+		Blur();
+		CreateEvent( "oncancel" );
 	}
 
 	protected override void OnMouseDown( MousePanelEvent e )

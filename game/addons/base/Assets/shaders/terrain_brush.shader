@@ -77,6 +77,15 @@ PS
 
 	float g_flRadius < Attribute( "Radius" ); Default( 16.0f ); >;
 	float4 g_flColor < Attribute( "Color" ); >;
+	float g_flBrushRotation < Attribute( "BrushRotation" ); Default( 0.0f ); >;
+
+	SamplerState g_sBilinearBorder < Filter( BILINEAR ); AddressU( BORDER ); AddressV( BORDER ); >;
+
+	// Grid overlay: world-space terrain axes and cell size (0 = disabled)
+	float3 g_vTerrainOrigin  < Attribute( "TerrainOrigin" );  Default3( 0, 0, 0 ); >;
+	float3 g_vTerrainRight   < Attribute( "TerrainRight" );   Default3( 1, 0, 0 ); >;
+	float3 g_vTerrainForward < Attribute( "TerrainForward" ); Default3( 0, 1, 0 ); >;
+	float  g_flCellSize      < Attribute( "CellSize" );       Default( 0.0f ); >;
 
 	#define COLOR_WRITE_ALREADY_SET
 	RenderState( ColorWriteEnable0, RGB );
@@ -139,8 +148,30 @@ PS
 			float3 localPos = i.DecalOrigin - vPositionWs;
 			float2 uv = float2( localPos.x, -localPos.y ) / ( 2 * g_flRadius ) - float2( 0.5, 0.5 );
 
-			float opacity = g_tBrush.Sample( g_sBilinearWrap, uv ).r;
+			float2 centeredUV = uv + 0.5;
+			float sinA, cosA;
+			sincos( g_flBrushRotation, sinA, cosA );
+			float2 rotatedUV = float2( -centeredUV.x * cosA - centeredUV.y * sinA,
+			                           -centeredUV.x * sinA + centeredUV.y * cosA ) + 0.5;
+
+			float opacity = g_tBrush.Sample( g_sBilinearBorder, rotatedUV ).r;
 			float4 color = float4( g_flColor.rgb, g_flColor.a * opacity );
+
+			// Grid overlay: project world position onto terrain's XY plane and draw cell lines
+			if ( g_flCellSize > 0.0f )
+			{
+				float3 delta = vPositionWs - g_vTerrainOrigin;
+				float2 cellUV = float2( dot( delta, g_vTerrainRight ), dot( delta, g_vTerrainForward ) ) / g_flCellSize;
+
+				float lineWidth = 0.04f;
+				float2 f = frac( cellUV );
+				float onLine = step( f.x, lineWidth ) + step( 1.0f - lineWidth, f.x )
+				             + step( f.y, lineWidth ) + step( 1.0f - lineWidth, f.y );
+				onLine = saturate( onLine );
+
+				// Grid follows the brush shape — fades where the brush is weak
+				color.a = saturate( color.a + onLine * opacity );
+			}
 
 			return color;
 		}

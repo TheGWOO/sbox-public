@@ -192,25 +192,9 @@ public sealed partial class ClutterComponent
 
 		var settings = GetCurrentSettings();
 		_volumeLayer ??= gridSystem.GetOrCreateLayer( this, settings );
-		_volumeLayer.ClearAllTiles();
 
-		// Rebuild model instances from storage
-		foreach ( var modelPath in Storage.ModelPaths )
-		{
-			var model = ResourceLibrary.Get<Model>( modelPath );
-			if ( model == null ) continue;
-
-			foreach ( var instance in Storage.GetInstances( modelPath ) )
-			{
-				_volumeLayer.AddModelInstance( Vector2Int.Zero, new ClutterInstance
-				{
-					Transform = new Transform( instance.Position, instance.Rotation, instance.Scale ),
-					Entry = new ClutterEntry { Model = model }
-				} );
-			}
-		}
-
-		_volumeLayer.RebuildBatches();
+		// The layer owns both rendering and collision for its instances.
+		_volumeLayer.PopulateFromStorage( Storage );
 	}
 
 	[Button( "Clear" )]

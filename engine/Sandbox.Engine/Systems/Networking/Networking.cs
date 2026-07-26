@@ -24,6 +24,9 @@ public static partial class Networking
 	[ConVar( "net_max_incoming", ConVarFlags.Protected, Help = "Maximum incoming messages to receive per tick. 0 = unlimited." )]
 	internal static int ReceiveBatchSizePerTick { get; set; } = 1024;
 
+	[ConVar( "net_allow_local", ConVarFlags.Protected, Help = "Allow loopback connections for multi-instance testing on one machine (P2P-like)." )]
+	internal static bool AllowLocal { get; set; } = false;
+
 	internal static Dictionary<string, string> ServerData { get; set; } = new();
 
 	/// <summary>
@@ -354,6 +357,10 @@ public static partial class Networking
 		// Connection.All, which allocates and includes mock ConnectionInfo entries with zero stats.
 		foreach ( var c in System.Connections )
 		{
+			// Don't try to count connections that aren't authenticated yet, Steam stats calls are blocking until fully authed
+			if ( c.State < Connection.ChannelState.Welcome )
+				continue;
+
 			var s = c.Stats;
 			totalIn += s.InBytesPerSecond;
 			totalOut += s.OutBytesPerSecond;
@@ -501,9 +508,6 @@ public static partial class Networking
 
 	static async Task<bool> CreateDedicatedServer( LobbyConfig config, CancellationToken token = default )
 	{
-		var success = await DedicatedServer.Start( config );
-		if ( !success ) return false;
-
 		lock ( NetworkThreadLock )
 		{
 			var net = new NetworkSystem( "server", Engine.IGameInstanceDll.Current.TypeLibrary )
@@ -512,10 +516,29 @@ public static partial class Networking
 			};
 
 			System = net;
+			System.InitializeHost();
+		}
 
-			net.InitializeHost();
-			net.AddSocket( DedicatedServer.IpSocket );
-			net.AddSocket( DedicatedServer.IdSocket );
+		var success = await DedicatedServer.Start( config );
+		if ( !success )
+		{
+			// Currently we shutdown the server if we fail to start the lobby, however lets clean up just incase.
+			lock ( NetworkThreadLock )
+			{
+				System = null;
+			}
+			return false;
+		}
+
+		lock ( NetworkThreadLock )
+		{
+			System.AddSocket( DedicatedServer.IpSocket );
+			System.AddSocket( DedicatedServer.IdSocket );
+
+			if ( AllowLocal )
+			{
+				System.AddSocket( new TcpSocket( "127.0.0.1", 55333 ) );
+			}
 
 			return !token.IsCancellationRequested;
 		}
@@ -613,8 +636,7 @@ public static partial class Networking
 
 		return new DisposeAction( () =>
 		{
-			System.IsDisconnecting = false;
-
+			System?.IsDisconnecting = false;
 			Disconnect();
 		} );
 	}
@@ -876,5 +898,21 @@ public static partial class Networking
 		await Task.Delay( 4000 ); // pause to allow server to restart
 
 		return await TryConnect( address );
+	}
+
+	/// <summary>
+	/// Are we currently matchmaking?
+	/// We want to suppress user-facing join errors in this case, and silently keep trying lobbies until we find one that works.
+	/// </summary>
+	internal static bool IsMatchmaking { get; private set; }
+
+	internal static IDisposable MatchmakingScope()
+	{
+		IsMatchmaking = true;
+
+		return new DisposeAction( () =>
+		{
+			IsMatchmaking = false;
+		} );
 	}
 }
