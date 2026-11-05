@@ -8,6 +8,7 @@ global using static Sandbox.Internal.GlobalToolsNamespace;
 global using static Sandbox.Internal.GlobalSystemNamespace;
 using System.Diagnostics;
 using System.Threading;
+using Sandbox.Engine;
 
 namespace Sandbox;
 
@@ -79,6 +80,7 @@ public static class Launcher
 public class PanelLauncherAppSystem : PanelAppSystem
 {
 	Editor.PanelWindow window;
+	readonly FramePacer framePacer = new();
 
 	protected override void OnInitialized()
 	{
@@ -88,6 +90,20 @@ public class PanelLauncherAppSystem : PanelAppSystem
 		window.MinSize = new Vector2( 880, 540 );
 		window.CanMaximize = false;
 		window.Root.AddChild( new Sandbox.LauncherUI.LauncherWindow( window ) );
+	}
+
+	protected override bool RunFrame()
+	{
+		bool running = base.RunFrame();
+		if ( running )
+		{
+			// Presentation need not block the main thread. Keep the launcher on the display's
+			// cadence when focused or hovered; the base loop still handles inactive throttling.
+			float refreshRate = SdlDisplay.GetCurrentMode( SdlDisplay.ForWindow( window.Core.Handle ) ).RefreshRate;
+			framePacer.Wait( float.IsFinite( refreshRate ) && refreshRate > 0 ? refreshRate : 60 );
+		}
+
+		return running;
 	}
 
 	public override void Shutdown()
