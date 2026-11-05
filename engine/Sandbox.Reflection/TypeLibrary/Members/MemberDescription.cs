@@ -145,7 +145,7 @@ public class MemberDescription : ISourceLineProvider, IMemberNameProvider, ITitl
 	protected void Init( MemberInfo x )
 	{
 		MemberInfo = x;
-		Name = MemberInfo.Name;
+		Name = StringPool.Get( MemberInfo.Name );
 
 		CaptureAttributes( MemberInfo );
 
@@ -267,7 +267,16 @@ public class MemberDescription : ISourceLineProvider, IMemberNameProvider, ITitl
 	/// </summary>
 	public T GetCustomAttribute<T>() where T : System.Attribute
 	{
-		return Attributes?.OfType<T>().FirstOrDefault() ?? null;
+		var attributes = Attributes;
+		if ( attributes is null ) return null;
+
+		foreach ( var attribute in attributes )
+		{
+			if ( attribute is T t )
+				return t;
+		}
+
+		return null;
 	}
 
 	internal virtual void Dispose()

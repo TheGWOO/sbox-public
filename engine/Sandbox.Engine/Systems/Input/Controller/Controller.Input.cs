@@ -10,7 +10,16 @@ internal sealed partial class Controller
 	/// <summary>
 	/// Get the first controller that's connected (shortcut)
 	/// </summary>
-	internal static Controller First => All.FirstOrDefault();
+	internal static Controller First
+	{
+		get
+		{
+			foreach ( var controller in All )
+				return controller;
+
+			return null;
+		}
+	}
 
 	/// <summary>
 	/// The input context for this controller.
@@ -33,7 +42,7 @@ internal sealed partial class Controller
 	/// <param name="axis"></param>
 	/// <param name="defaultValue"></param>
 	/// <returns></returns>
-	internal float GetAxis( NativeEngine.GameControllerAxis axis, float defaultValue = 0f )
+	internal float GetAxis( Sandbox.GameControllerAxis axis, float defaultValue = 0f )
 	{
 		var foundAxis = ControllerAxes.FirstOrDefault( x => x.Axis == axis );
 		if ( foundAxis is null )
@@ -44,12 +53,12 @@ internal sealed partial class Controller
 		return foundAxis.Value;
 	}
 
-	internal void SetAxis( NativeEngine.GameControllerAxis axis, int inputValue )
+	internal void SetAxis( Sandbox.GameControllerAxis axis, int inputValue )
 	{
 		float flValue = inputValue;
 		float normalizedAxis = flValue.Remap( Controller.AXIS_RANGE.x, Controller.AXIS_RANGE.y, -1, 1 );
 
-		var deadzone = axis < NativeEngine.GameControllerAxis.TriggerLeft
+		var deadzone = axis < Sandbox.GameControllerAxis.TriggerLeft
 			? Preferences.ControllerJoystickDeadzone / 100.0f
 			: TriggerDeadzone;
 
@@ -78,7 +87,7 @@ internal sealed partial class Controller
 	/// </summary>
 	internal record class InputAxis
 	{
-		internal NativeEngine.GameControllerAxis Axis { get; set; }
+		internal Sandbox.GameControllerAxis Axis { get; set; }
 		internal float Value { get; set; }
 	}
 

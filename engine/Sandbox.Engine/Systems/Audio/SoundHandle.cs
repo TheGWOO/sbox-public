@@ -1,4 +1,4 @@
-using Sandbox.Audio;
+﻿using Sandbox.Audio;
 using System.Collections.Generic;
 using System.IO;
 
@@ -20,20 +20,11 @@ public partial class SoundHandle : IValid, IDisposable
 	Transform _transform = Transform.Zero;
 
 	static SoundHandle _empty;
-	internal NativeReverbEffect _reverb;
 
 	/// <summary>Source room reverb estimate. Written by SoundSimulationSystem on the main thread.</summary>
 	internal ReverbSnapshot SourceRoom { get; set; }
 	internal int OcclusionPhase { get; set; } = -1;
 	internal int DiffractionTick;
-	internal RealTimeUntil ReverbTailUntil;
-	internal bool SamplerEnded;
-
-	internal NativeReverbEffect GetOrCreateReverb()
-	{
-		_reverb ??= new NativeReverbEffect();
-		return _reverb;
-	}
 
 	/// <summary>
 	/// RealTime that this sound was created
@@ -449,6 +440,9 @@ public partial class SoundHandle : IValid, IDisposable
 		if ( _destroyed ) return false;
 		if ( Finished ) { Dispose(); return false; }
 		if ( Paused ) return false;
+
+		// Local sounds include overlay UI and shared music, which outlive the scene.
+		if ( !ListenLocal && Scene?.IsSuspended == true ) return false;
 		UpdateFollower();
 		return true;
 	}
@@ -511,14 +505,27 @@ public partial class SoundHandle : IValid, IDisposable
 		}
 	}
 
+	// The reload path frees the native source as soon as this returns, and Stop() only sets
+	// Finished, so tear the handles down here instead of leaving the mixers alive.
 	internal static void StopAll( CSfxTable sfx )
 	{
+		var disposedAny = false;
+
 		_tickList.Clear();
 		_tickList.AddRange( active );
 		foreach ( var handle in _tickList )
 		{
 			if ( handle._sfx != sfx ) continue;
-			if ( handle.IsValid ) handle.Stop();
+			if ( !handle.IsValid ) continue;
+
+			handle.Dispose();
+			disposedAny = true;
+		}
+
+		// Draining takes the mix lock, so only pay for it when something was playing
+		if ( disposedAny )
+		{
+			Audio.MixingThread.DrainDisposals();
 		}
 	}
 
@@ -567,8 +574,6 @@ public partial class SoundHandle : IValid, IDisposable
 			}
 		}
 
-		var reverb = isLocal ? null : GetOrCreateReverb();
-
 		return new Audio.VoiceState
 		{
 			Sampler = sampler,
@@ -592,8 +597,8 @@ public partial class SoundHandle : IValid, IDisposable
 			HasLipSync = LipSync.Enabled,
 			LipSync = LipSync,
 			Handle = this,
-			Reverb = reverb,
-			ReverbRoom = ReverbEnabled && reverb is not null ? SourceRoom : default,
+			HasReverb = !isLocal,
+			ReverbRoom = ReverbEnabled && !isLocal ? SourceRoom : default,
 		};
 	}
 

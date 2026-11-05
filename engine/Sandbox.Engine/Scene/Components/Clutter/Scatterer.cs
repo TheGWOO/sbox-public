@@ -1,3 +1,4 @@
+using Sandbox.Engine;
 namespace Sandbox.Clutter;
 
 /// <summary>
@@ -52,7 +53,7 @@ public abstract class Scatterer
 	public override int GetHashCode()
 	{
 		HashCode hash = new();
-		var typeDesc = Game.TypeLibrary.GetType( GetType() );
+		var typeDesc = GlobalContext.Current.TypeLibrary.GetType( GetType() );
 
 		if ( typeDesc == null )
 			return base.GetHashCode();
@@ -155,25 +156,34 @@ public abstract class Scatterer
 	protected static SceneTraceResult[] BatchTraceGround( Scene scene, IReadOnlyList<Vector3> positions, BBox sceneBounds )
 	{
 		var results = new SceneTraceResult[positions.Count];
-		var physicsWorld = scene.PhysicsWorld;
-
-		// even though this is on the main thread, it's safe to do since nothing will change 
-		// the physics world between now and when this completes
-		Parallel.For( 0, positions.Count, i =>
-		{
-			var position = positions[i];
-			var traceStart = position.WithZ( sceneBounds.Maxs.z );
-			var traceEnd = position.WithZ( sceneBounds.Mins.z );
-
-			var physicsResult = physicsWorld.Trace
-				.Ray( traceStart, traceEnd )
-				.WithoutTags( "player", "trigger", "clutter" )
-				.Run();
-
-			results[i] = SceneTraceResult.From( scene, physicsResult );
-		} );
-
+		BatchTraceGroundInto( scene, positions, sceneBounds, results );
 		return results;
+	}
+
+	internal static PooledSpan<SceneTraceResult> RentGroundTraces( Scene scene, IReadOnlyList<Vector3> positions, BBox sceneBounds )
+	{
+		var traces = new PooledSpan<SceneTraceResult>( positions.Count, clearOnReturn: true );
+		BatchTraceGroundInto( scene, positions, sceneBounds, traces.Array );
+		return traces;
+	}
+
+	private static void BatchTraceGroundInto( Scene scene, IReadOnlyList<Vector3> positions, BBox sceneBounds, SceneTraceResult[] results )
+	{
+		// The filter is built once rather than for every trace
+		var trace = scene.PhysicsWorld.Trace.WithoutTags( "player", "trigger", "clutter" );
+
+		// even though this is on the main thread, it's safe to do since nothing will change
+		// the physics world between now and when this completes
+		var state = (Scene: scene, Trace: trace, Positions: positions, Bounds: sceneBounds, Results: results);
+		JobDispatcher.For( positions.Count, state, static ( s, i ) =>
+		{
+			var position = s.Positions[i];
+			var traceStart = position.WithZ( s.Bounds.Maxs.z );
+			var traceEnd = position.WithZ( s.Bounds.Mins.z );
+
+			var physicsResult = s.Trace.Ray( traceStart, traceEnd ).Run();
+			s.Results[i] = SceneTraceResult.From( s.Scene, physicsResult );
+		} );
 	}
 
 	/// <summary>

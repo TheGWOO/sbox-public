@@ -50,6 +50,10 @@ internal static class BlobDataSerializer
 	/// </summary>
 	private static byte[] SerializeBlob( BlobData blob )
 	{
+		// Never loaded: its stored bytes are its serialization, no deserialize/serialize round trip
+		if ( blob.PendingData is { } pending )
+			return pending;
+
 		var stream = ByteStream.Create( DefaultStreamSize );
 		try
 		{
@@ -97,6 +101,18 @@ internal static class BlobDataSerializer
 		if ( Activator.CreateInstance( expectedType ) is not BlobData instance )
 			return null;
 
+		if ( !instance.TryDeferLoad( blobData ) )
+			LoadInto( instance, blobData );
+
+		return instance;
+	}
+
+	/// <summary>
+	/// Deserialize stored blob data (version prefix + payload) into <paramref name="instance"/>,
+	/// upgrading it if it's an older version.
+	/// </summary>
+	internal static void LoadInto( BlobData instance, byte[] blobData )
+	{
 		var stream = ByteStream.CreateReader( blobData );
 		try
 		{
@@ -112,43 +128,47 @@ internal static class BlobDataSerializer
 		{
 			stream.Dispose();
 		}
-
-		return instance;
 	}
 
-	private static byte[] GetBlobData( Dictionary<Guid, RegisteredBlob> blobs )
+	internal readonly record struct CapturedBlob( Guid Id, int Version, byte[] Data );
+
+	private static CapturedBlob[] CaptureBlobs( Dictionary<Guid, RegisteredBlob> blobs ) =>
+		blobs.Select( x => new CapturedBlob( x.Key, x.Value.Blob.Version, x.Value.Data ) ).ToArray();
+
+	private static byte[] GetBlobData( Dictionary<Guid, RegisteredBlob> blobs ) => PackBlobs( CaptureBlobs( blobs ) );
+	internal static byte[] PackBlobs( CapturedBlob[] blobs )
 	{
-		if ( blobs == null || blobs.Count == 0 )
+		if ( blobs == null || blobs.Length == 0 )
 			return null;
 
 		// Canonical order so unchanged content always produces byte-identical output,
 		// independent of registration order or dictionary enumeration details
-		var ordered = blobs.OrderBy( x => x.Key ).ToArray();
+		var ordered = blobs.OrderBy( x => x.Id ).ToArray();
 
-		long offset = HeaderSize + blobs.Count * TocEntrySize;
+		long offset = HeaderSize + blobs.Length * TocEntrySize;
 
 		long totalSize = offset;
 		foreach ( var kvp in ordered )
-			totalSize += kvp.Value.Data.Length;
+			totalSize += kvp.Data.Length;
 
 		var outputStream = ByteStream.Create( (int)totalSize );
 		try
 		{
 			outputStream.Write( 1 );
-			outputStream.Write( blobs.Count );
+			outputStream.Write( blobs.Length );
 
 			foreach ( var kvp in ordered )
 			{
-				outputStream.Write( kvp.Key.ToByteArray() );
-				outputStream.Write( kvp.Value.Blob.Version );
+				outputStream.Write( kvp.Id.ToByteArray() );
+				outputStream.Write( kvp.Version );
 				outputStream.Write( offset );
-				outputStream.Write( kvp.Value.Data.Length );
-				offset += kvp.Value.Data.Length;
+				outputStream.Write( kvp.Data.Length );
+				offset += kvp.Data.Length;
 			}
 
 			foreach ( var kvp in ordered )
 			{
-				outputStream.Write( kvp.Value.Data );
+				outputStream.Write( kvp.Data );
 			}
 
 			return outputStream.ToArray();
@@ -216,6 +236,30 @@ internal static class BlobDataSerializer
 	}
 
 	/// <summary>
+	/// Temporarily suppresses any active blob context, forcing nested serialization to write
+	/// self-contained (inline) data instead of referencing an ambient context by guid.
+	/// Use this when producing JSON that must remain valid outside the current context's lifetime,
+	/// e.g. a diff patch that's cached and reapplied long after the context that created it is gone.
+	/// </summary>
+	internal static IDisposable Suppress()
+	{
+		return new SuppressScope( _current );
+	}
+
+	private sealed class SuppressScope : IDisposable
+	{
+		private readonly BlobContext _previous;
+
+		public SuppressScope( BlobContext previous )
+		{
+			_previous = previous;
+			_current = null;
+		}
+
+		public void Dispose() => _current = _previous;
+	}
+
+	/// <summary>
 	/// Load blob data from memory if available, otherwise from file path.
 	/// </summary>
 	public static BlobContext Load( byte[] data, string filePath )
@@ -253,34 +297,57 @@ internal static class BlobDataSerializer
 	/// </summary>
 	public static BlobContext LoadFrom( string filePath )
 	{
-		Dictionary<Guid, byte[]> binaryData = null;
+		// Most resources have no blobs, so only go looking for the blob data once something asks for it.
+		var context = new BlobContext( _current, () => ResolveBlobData( filePath ) );
+		_current = context;
+		return context;
+	}
 
-		if ( !string.IsNullOrEmpty( filePath ) )
+	/// <summary>
+	/// Finds and parses the blob table for a resource, searching all relevant filesystems and file variations.
+	/// Checks both "_d" sidecar and compiled "_c" files, with disk fallback if needed (for published resources).
+	/// </summary>
+	private static Dictionary<Guid, byte[]> ResolveBlobData( string filePath )
+	{
+		if ( string.IsNullOrEmpty( filePath ) )
+			return null;
+
+		if ( filePath.EndsWith( "_c" ) )
+			filePath = filePath[..^2];
+
+		var sidecarPath = filePath + "_d";
+		var compiledPath = filePath + "_c";
+
+		ReadOnlySpan<BaseFileSystem> filesystems =
+		[
+			FileSystem.Mounted,
+			PackageManager.MountedFileSystem,
+		];
+
+		foreach ( var fs in filesystems )
 		{
-			if ( filePath.EndsWith( "_c" ) )
-				filePath = filePath[..^2];
+			if ( fs is null )
+				continue;
 
-			var path = filePath + "_d";
+			// The "_d" sidecar is already stored in the blob-file format.
+			if ( fs.FileExists( sidecarPath ) )
+				return ParseFile( fs.ReadAllBytes( sidecarPath ) );
 
-			if ( FileSystem.Mounted?.FileExists( path ) == true )
-				binaryData = ParseFile( FileSystem.Mounted.ReadAllBytes( path ) );
-			else if ( File.Exists( path ) )
-				binaryData = ParseFile( File.ReadAllBytes( path ) );
-			else // Read from compiled scene instead
+			// Otherwise pull the compiled blob block out of the compiled resource.
+			if ( fs.FileExists( compiledPath ) )
 			{
-				var compiledPath = filePath + "_c";
-				if ( FileSystem.Mounted?.FileExists( compiledPath ) == true )
-				{
-					var blockData = Game.Resources.ReadCompiledResourceBlock( CompiledBlobName, FileSystem.Mounted.ReadAllBytes( compiledPath ) );
-					if ( blockData != null )
-						binaryData = ParseFile( blockData );
-				}
+				var blockData = Game.Resources.ReadCompiledResourceBlock( CompiledBlobName, fs.ReadAllBytes( compiledPath ) );
+				if ( blockData != null )
+					return ParseFile( blockData );
 			}
 		}
 
-		var context = new BlobContext( _current, binaryData );
-		_current = context;
-		return context;
+		// Final fallback: a loose sidecar on raw disk (e.g. freshly saved in the editor and not
+		// yet visible through a mounted filesystem).
+		if ( File.Exists( sidecarPath ) )
+			return ParseFile( File.ReadAllBytes( sidecarPath ) );
+
+		return null;
 	}
 
 	/// <summary>
@@ -289,17 +356,29 @@ internal static class BlobDataSerializer
 	public sealed class BlobContext : IDisposable
 	{
 		internal readonly Dictionary<Guid, RegisteredBlob> Blobs;
-		internal readonly Dictionary<Guid, byte[]> BinaryData;
+		private Dictionary<Guid, byte[]> _binaryData;
+		private Func<Dictionary<Guid, byte[]>> _resolveBinaryData;
 		private readonly BlobContext _previous;
+
+		internal Dictionary<Guid, byte[]> BinaryData => _binaryData ??= _resolveBinaryData?.Invoke() ?? new();
 
 		internal BlobContext( BlobContext previous, Dictionary<Guid, byte[]> binaryData = null )
 		{
 			Blobs = new();
-			BinaryData = binaryData ?? new();
+			_binaryData = binaryData ?? new();
+			_previous = previous;
+		}
+
+		internal BlobContext( BlobContext previous, Func<Dictionary<Guid, byte[]>> resolveBinaryData )
+		{
+			Blobs = new();
+			_resolveBinaryData = resolveBinaryData;
 			_previous = previous;
 		}
 
 		public byte[] ToByteArray() => GetBlobData( Blobs );
+
+		internal CapturedBlob[] Detach() => CaptureBlobs( Blobs );
 
 		/// <summary>
 		/// Merge extra serialized blob data into this open context, so separately-captured blobs
